@@ -2,19 +2,30 @@ const std = @import("std");
 const zell = @import("zell");
 
 pub fn main() !void {
-    const regex: zell.regex.Regex = zell.regex.compile("^exit$").?;
+
+    //var gpa = std.heap.DebugAllocator(.{}){};
+    //const allocator = gpa.allocator();
+    //const regex: zell.regex.Regex = zell.regex.compile("^exit$").?;
 
     while (true) {
         var buf: [1024]u8 = undefined;
-        var commands: [50][]const u8 = undefined;
         const size = try zell.readInput(&buf);
-        std.debug.print("You entered: '{s}'\n", .{ buf[0..size] });
-        _ = try zell.parse(buf[0..size], &commands);
+        std.debug.print("line: {s}\n", .{buf[0..size]});
 
+        const fork_pid = try std.posix.fork();
 
-        if (regex.isMatch(commands[0])) {
+        if (fork_pid == 0) {
+
             return;
+
+        } else {
+            const wait_result = std.posix.waitpid(fork_pid, 0);
+            if (wait_result.status != 0) {
+                std.debug.print("Command returned {}.\n", .{wait_result.status});
+            }
+
         }
+
     }
 
 
