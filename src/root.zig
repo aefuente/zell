@@ -6,5 +6,5 @@ const mvzr = @import("mvzr.zig");
 pub const readInputAllocating = stdin.readInputAllocating;
 pub const readInput = stdin.readInput;
 pub const parseAllocating = parser.parseAllocating;
-pub const parse = parser.parse;
+pub const parseAlloc = parser.parseAlloc;
 pub const regex = mvzr;
