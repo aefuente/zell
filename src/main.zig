@@ -76,16 +76,12 @@ pub fn main() !void {
             continue;
         }
 
-        // Fork 
         const fork_pid = try std.posix.fork();
-        // If child
         if (fork_pid == 0) {
             const result = std.posix.execvpeZ(args_ptrs[0].?, &args_ptrs, env);
             std.debug.print("Result: {any}\n", .{result});
 
             return;
-
-        // If parent
         } else {
             const wait_result = std.posix.waitpid(fork_pid, 0);
             if (wait_result.status != 0) {
