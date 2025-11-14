@@ -4,40 +4,107 @@ const assert = std.debug.assert;
 
 const builtIns = [_][]const u8 {"cd"};
 
+const Terminal = struct {
+    tty_file: std.fs.File,
+    active_settings: std.os.linux.termios,
+    normal_settings: std.os.linux.termios,
+
+    pub fn init() !Terminal {
+        const tty_file = try std.fs.openFileAbsolute("/dev/tty", .{});
+
+        var old_settings: std.os.linux.termios = undefined;
+        _ = std.os.linux.tcgetattr(tty_file.handle, &old_settings);
+
+        var new_settings: std.os.linux.termios = old_settings;
+        new_settings.lflag.ICANON = false;
+        new_settings.lflag.ECHO = false;
+
+        return Terminal{
+            .active_settings = new_settings,
+            .normal_settings = old_settings,
+            .tty_file =  tty_file,
+        };
+
+    }
+
+    pub fn set_active(self: Terminal) void {
+        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.active_settings);
+    }
+    pub fn set_normal(self: Terminal) void {
+        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.normal_settings);
+    }
+    pub fn deinit(self: Terminal) void {
+        self.tty_file.close();
+    }
+};
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer assert(debug_allocator.deinit() == .ok);
     const gpa = debug_allocator.allocator();
 
+    var terminal = try Terminal.init();
+    defer terminal.set_normal();
+    defer terminal.deinit();
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var write_buffer = try std.ArrayList(u8).initCapacity(gpa, 50);
-    defer write_buffer.deinit(gpa);
+    var command_buffer = try std.ArrayList(u8).initCapacity(gpa, 50);
+    defer command_buffer.deinit(gpa);
 
     var arg_buffer = try std.ArrayList(?[*:0]u8).initCapacity(gpa, 10);
     defer arg_buffer.deinit(gpa);
 
+    var read_buf: [100]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&read_buf);
+    var reader = &stdin_reader.interface;
+
     const env = std.c.environ;
 
     while (true) {
-        write_buffer.clearRetainingCapacity();
+        command_buffer.clearRetainingCapacity();
         arg_buffer.clearRetainingCapacity();
+
         try stdout.print("zell>> ",.{});
         try stdout.flush();
 
-        const size = try read_stdin(gpa, &write_buffer);
+        terminal.set_active();
+        while (true) {
+            const c = try reader.takeByte();
+            if (c == '\n') {
+                try stdout.print("\n", .{});
+                try stdout.flush();
+                try command_buffer.append(gpa, 0);
+                break;
+            }
+
+            if (c == 127) {
+                if (command_buffer.items.len == 0) {
+                    continue;
+                }
+                try stdout.print("\x08 \x08", .{});
+                _ = command_buffer.pop();
+                try stdout.flush();
+                continue;
+            }
+
+            try command_buffer.append(gpa, c);
+
+            try stdout.print("{c}", .{c});
+            try stdout.flush();
+        }
+
+        terminal.set_normal();
 
         var i: usize = 0;
         var n: usize = 0;
         var ofs: usize = 0;
-        while (i <= size) : (i += 1) {
-            if (write_buffer.items[i] == 0x20 or i == size) {
-                write_buffer.items[i] = 0;
-                try arg_buffer.append(gpa, @as([*:0]u8, write_buffer.items[ofs..i :0].ptr));
+        while (i <= command_buffer.items.len-1) : (i += 1) {
+            if (command_buffer.items[i] == 0x20 or i == command_buffer.items.len-1) {
+                command_buffer.items[i] = 0;
+                try arg_buffer.append(gpa, @as([*:0]u8, command_buffer.items[ofs..i :0].ptr));
                 n += 1;
                 ofs = i + 1;
             }
@@ -73,18 +140,6 @@ pub fn main() !void {
             }
         }
     }
-}
-
-pub fn read_stdin(allocator: Allocator, array_list: *std.ArrayList(u8)) !usize {
-    var input_buf: [20]u8 = undefined;
-    var stdin = std.fs.File.stdin().reader(&input_buf);
-    var reader = &stdin.interface;
-
-    var allocating_writer = std.Io.Writer.Allocating.fromArrayList(allocator, array_list);
-    const count = try reader.streamDelimiter(&allocating_writer.writer, '\n');
-    array_list.* = allocating_writer.toArrayList();
-    try array_list.append(allocator, 0);
-    return count;
 }
 
 
