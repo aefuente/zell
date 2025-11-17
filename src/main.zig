@@ -22,7 +22,6 @@ pub fn main() !void {
     defer terminal.set_cooked();
     defer terminal.deinit();
 
-
     // Initialize command array list. Will be used to hold the data interpreted
     // from raw tty input
     var command_buffer = try std.ArrayList(u8).initCapacity(gpa, COMMAND_BUF_INIT_CAP);

@@ -71,56 +71,75 @@ pub fn read_line(
 
     termianl.set_raw();
     defer termianl.set_cooked();
+
     // Initialize stdout writer so we can print to screen
     var stdout_buffer: [STDOUT_BUF_SIZE]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+    // Print out the starting prompt
     try stdout.print("zell>> ",.{});
     try stdout.flush();
 
+    // Initialize the reader for reading stdin
     var read_buf: [STDIN_BUF_SIZE]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().reader(&read_buf);
     const stdin = &stdin_reader.interface;
 
+    // Initialize the cursor position
+    var cursor_position: usize = 0;
+
     while (true) {
+        // Read the character
         const c = try stdin.takeByte();
 
         if (c == BACKSPACE) {
             if (array_list.items.len == 0) {
                 continue;
             }
-            try stdout.print("\x08 \x08", .{});
-            _ = array_list.pop();
-            try stdout.flush();
-            continue;
+            if (cursor_position == 0) {
+                @panic("integer underflow");
+            }
+
+            cursor_position -= 1;
+            _ = array_list.orderedRemove(cursor_position);
+            try draw_line(stdout, array_list.items, cursor_position);
         }
 
-        if (c == '\n') {
+        else if (c == '\n') {
             try stdout.print("\n", .{});
             try stdout.flush();
             try array_list.append(allocator, 0);
             break;
         }
 
-        if (c == CTRL_C) {
+        else if (c == CTRL_C) {
             array_list.clearRetainingCapacity();
             try stdout.print("\n", .{});
             try stdout.flush();
             break;
         }
 
-        if (c == ESC){
+        // Escape sequence
+        else if (c == ESC){
             const code = try stdin.takeByte();
             if (code == BRACKET) {
                 const next_code = try stdin.takeByte();
                 switch (next_code) {
-                    // Modify current line
                     LEFT_ARROW => {
+                        if (cursor_position == 0) {
+                            continue;
+                        }
+                        cursor_position -= 1;
+                        try draw_line(stdout, array_list.items, cursor_position);
                         continue;
                     },
-                    // Modify current line
                     RIGHT_ARROW => {
+                        if (cursor_position + 1 > array_list.items.len) {
+                            continue;
+                        }
+                        cursor_position += 1;
+                        try draw_line(stdout, array_list.items, cursor_position);
                         continue;
                     },
                     // Backwards in history
@@ -135,10 +154,34 @@ pub fn read_line(
                 }
             }
         }
-        try array_list.append(allocator, c);
-        try stdout.print("{c}", .{c});
-        //try stdout.print("{c}", .{c});
-        try stdout.flush();
+        else {
+            try array_list.insert(allocator, cursor_position, c);
+            cursor_position +=1;
+            try draw_line(stdout, array_list.items, cursor_position);
+        }
+    }
+}
+
+fn draw_line(writer: *std.Io.Writer, line: []const u8, cursor_pos: usize) !void {
+    // Write our new line
+    // \r -> start at column 0
+    // zell>> {s} -> print our buffer 
+    // \x1b[K clear what might be there from the previous write
+    try writer.print("\rzell>> {s}\x1b[K",.{line});
+
+    // Calculate where to put the cursor
+    var diff: usize = 0;
+    if (line.len <= cursor_pos) {
+        diff = 0;
+    }else {
+        diff = line.len - cursor_pos;
     }
 
+    if (diff != 0) {
+        // Move the cursor to the left
+        try writer.print("\x1b[{d}D", .{diff});
+    }
+
+    try writer.flush();
 }
+
