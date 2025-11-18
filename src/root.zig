@@ -1,5 +1,6 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 // Constant decimal values for key presses
 const ESC = '\x1b';
@@ -12,7 +13,6 @@ const BACKSPACE = 127;
 const CTRL_C = 3;
 
 
-const STDOUT_BUF_SIZE: usize = 1024;
 const STDIN_BUF_SIZE: usize = 50;
 
 
@@ -63,23 +63,45 @@ pub const Terminal = struct {
     }
 };
 
+pub const HistoryManager = struct {
+    array_list: std.ArrayList([]u8),
+
+
+    pub fn init(allocator: Allocator) !HistoryManager {
+        return .{
+            .array_list = try std.ArrayList([]u8).initCapacity(allocator, 10)
+        };
+    }
+
+    pub fn store(self: *HistoryManager, allocator: Allocator, line: []u8) !void {
+        var history_line = try allocator.alloc(u8, line.len);
+        @memcpy(history_line[0..],line);
+        try self.array_list.append(allocator, history_line);
+    }
+
+    pub fn print(self: *HistoryManager) !void {
+        for (0.., self.array_list.items) |index, line| {
+            std.debug.print("{d} {s}\n", .{index, line});
+        }
+    }
+
+    pub fn deinit(self: *HistoryManager, allocator: Allocator) void {
+        for (self.array_list.items) |line| {
+            allocator.free(line);
+        }
+        self.array_list.deinit(allocator);
+    }
+};
+
 pub fn read_line(
     allocator: std.mem.Allocator,
+    stdout: *std.Io.Writer,
     array_list: *std.ArrayList(u8),
     termianl: *Terminal
     ) !void {
 
     termianl.set_raw();
     defer termianl.set_cooked();
-
-    // Initialize stdout writer so we can print to screen
-    var stdout_buffer: [STDOUT_BUF_SIZE]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    // Print out the starting prompt
-    try stdout.print("zell>> ",.{});
-    try stdout.flush();
 
     // Initialize the reader for reading stdin
     var read_buf: [STDIN_BUF_SIZE]u8 = undefined;
