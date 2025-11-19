@@ -55,11 +55,11 @@ pub fn main() !void {
 
         try zell.read_line(gpa, &history, stdout, &command_buffer, &terminal);
 
-        try history.store(gpa, command_buffer.items);
-
         if (command_buffer.items.len == 0) {
             continue;
         }
+
+        try history.store(gpa, command_buffer.items);
 
         var i: usize = 0;
         var n: usize = 0;

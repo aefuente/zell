@@ -111,6 +111,8 @@ pub fn read_line(
     // Initialize the cursor position
     var cursor_position: usize = 0;
 
+    // Decided to initialize history_position to max so we can recognize the
+    // "start of history indexing".
     var history_position: usize = std.math.maxInt(usize);
 
     while (true) {
@@ -167,38 +169,43 @@ pub fn read_line(
                         continue;
                     },
                     UP_ARROW => {
-                        if (history_position == std.math.maxInt(usize) and history.array_list.items.len > 0) {
-                            history_position = history.array_list.items.len - 1;
-                        }else {
-                            if (history_position > 0) {
-                                history_position -= 1;
+                        // Identity if we are on the "start condition" of moving
+                        // through history
+                        if (history_position == std.math.maxInt(usize)) {
+                            if (history.array_list.items.len == 0) {
+                                history_position = 0;
+                            }else {
+                                history_position = history.array_list.items.len;
                             }
-                        }
 
+                        }
+                        if (history_position == 0) {
+                            continue;
+                        }
+                        history_position -= 1;
                         try array_list.resize(allocator, history.array_list.items[history_position].len);
                         @memcpy(array_list.items, history.array_list.items[history_position]);
                         cursor_position = array_list.items.len;
-
                         try draw_line(stdout, array_list.items, cursor_position);
-                        continue;
                     },
                     DOWN_ARROW => {
-                        if (history_position == array_list.items.len) {
-                            array_list.clearRetainingCapacity();
-                            try draw_line(stdout, array_list.items, cursor_position);
+
+                        if (history_position == std.math.maxInt(usize)) {
                             continue;
-
-
                         }
-                        if (history_position < history.array_list.items.len - 1 and history_position != 0) {
+
+                        if (history_position + 1 < history.array_list.items.len) {
                             history_position += 1;
                             try array_list.resize(allocator, history.array_list.items[history_position].len);
-                        @memcpy(array_list.items, history.array_list.items[history_position]);
-                        cursor_position = array_list.items.len;
-                        try draw_line(stdout, array_list.items, cursor_position);
-                        continue;
+                            @memcpy(array_list.items, history.array_list.items[history_position]);
+                            cursor_position = array_list.items.len;
+                            try draw_line(stdout, array_list.items, cursor_position);
+                        }else {
+                            history_position = std.math.maxInt(usize);
+                            cursor_position = 0;
+                            array_list.clearRetainingCapacity();
+                            try draw_line(stdout, array_list.items, cursor_position);
                         }
-                        continue;
                     },
                     else => { }
                 }
