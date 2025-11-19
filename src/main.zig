@@ -53,7 +53,7 @@ pub fn main() !void {
         command_buffer.clearRetainingCapacity();
         arg_buffer.clearRetainingCapacity();
 
-        try zell.read_line(gpa,stdout, &command_buffer, &terminal);
+        try zell.read_line(gpa, &history, stdout, &command_buffer, &terminal);
 
         try history.store(gpa, command_buffer.items);
 

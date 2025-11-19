@@ -66,10 +66,9 @@ pub const Terminal = struct {
 pub const HistoryManager = struct {
     array_list: std.ArrayList([]u8),
 
-
     pub fn init(allocator: Allocator) !HistoryManager {
         return .{
-            .array_list = try std.ArrayList([]u8).initCapacity(allocator, 10)
+            .array_list = try std.ArrayList([]u8).initCapacity(allocator, 10),
         };
     }
 
@@ -95,6 +94,7 @@ pub const HistoryManager = struct {
 
 pub fn read_line(
     allocator: std.mem.Allocator,
+    history: *HistoryManager,
     stdout: *std.Io.Writer,
     array_list: *std.ArrayList(u8),
     termianl: *Terminal
@@ -110,6 +110,8 @@ pub fn read_line(
 
     // Initialize the cursor position
     var cursor_position: usize = 0;
+
+    var history_position: usize = std.math.maxInt(usize);
 
     while (true) {
         // Read the character
@@ -164,12 +166,38 @@ pub fn read_line(
                         try draw_line(stdout, array_list.items, cursor_position);
                         continue;
                     },
-                    // Backwards in history
                     UP_ARROW => {
+                        if (history_position == std.math.maxInt(usize) and history.array_list.items.len > 0) {
+                            history_position = history.array_list.items.len - 1;
+                        }else {
+                            if (history_position > 0) {
+                                history_position -= 1;
+                            }
+                        }
+
+                        try array_list.resize(allocator, history.array_list.items[history_position].len);
+                        @memcpy(array_list.items, history.array_list.items[history_position]);
+                        cursor_position = array_list.items.len;
+
+                        try draw_line(stdout, array_list.items, cursor_position);
                         continue;
                     },
-                    // Forfwards in history
                     DOWN_ARROW => {
+                        if (history_position == array_list.items.len) {
+                            array_list.clearRetainingCapacity();
+                            try draw_line(stdout, array_list.items, cursor_position);
+                            continue;
+
+
+                        }
+                        if (history_position < history.array_list.items.len - 1 and history_position != 0) {
+                            history_position += 1;
+                            try array_list.resize(allocator, history.array_list.items[history_position].len);
+                        @memcpy(array_list.items, history.array_list.items[history_position]);
+                        cursor_position = array_list.items.len;
+                        try draw_line(stdout, array_list.items, cursor_position);
+                        continue;
+                        }
                         continue;
                     },
                     else => { }
