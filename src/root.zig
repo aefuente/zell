@@ -1,6 +1,9 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const File = std.fs.File;
+const linux = std.os.linux;
+const posix = std.posix;
 
 // Constant decimal values for key presses
 const ESC = '\x1b';
@@ -12,23 +15,36 @@ const LEFT_ARROW = '\x44';
 const BACKSPACE = 127;
 const CTRL_C = 3;
 
-
 const STDIN_BUF_SIZE: usize = 50;
+
+const history_file = ".zell_history";
+
+
+fn get_history_file() !File {
+    if (posix.getenv("HOME")) |home |{
+        const home_dir = try std.fs.openDirAbsolute(home, .{});
+        home_dir.access(history_file, .{}) catch {
+            return try home_dir.createFile(history_file, .{});
+        };
+        return home_dir.openFile(history_file, .{.mode = .read_write});
+    }
+    return error.MissingHomeDirectory;
+}
 
 
 pub const Terminal = struct {
-    tty_file: std.fs.File,
-    raw_settings: std.os.linux.termios,
-    cooked_settings: std.os.linux.termios,
+    tty_file: File,
+    raw_settings: linux.termios,
+    cooked_settings: linux.termios,
 
     pub fn init() !Terminal {
         const tty_file = try std.fs.openFileAbsolute("/dev/tty", .{});
 
-        var cooked_settings: std.os.linux.termios = undefined;
+        var cooked_settings: linux.termios = undefined;
         _ = std.os.linux.tcgetattr(tty_file.handle, &cooked_settings);
 
         // Holds the raw settings listed below
-        var raw_settings: std.os.linux.termios = cooked_settings;
+        var raw_settings: linux.termios = cooked_settings;
 
         // In noncanonical mode input is available immediately. Essentially we
         // don't have to wait for new line characters to receive the data and we
@@ -52,10 +68,10 @@ pub const Terminal = struct {
     }
 
     pub fn set_raw(self: Terminal) void {
-        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.raw_settings);
+        _ = linux.tcsetattr(self.tty_file.handle, linux.TCSA.NOW, &self.raw_settings);
     }
     pub fn set_cooked(self: Terminal) void {
-        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.cooked_settings);
+        _ = linux.tcsetattr(self.tty_file.handle, linux.TCSA.NOW, &self.cooked_settings);
     }
 
     pub fn deinit(self: Terminal) void {
@@ -82,6 +98,33 @@ pub const HistoryManager = struct {
         for (0.., self.array_list.items) |index, line| {
             std.debug.print("{d} {s}\n", .{index, line});
         }
+    }
+
+    pub fn save(self: *HistoryManager) void {
+        // Open the history file
+        const hf = get_history_file() catch { return; };
+        defer hf.close();
+
+        // Get the end position of the file
+        const end = hf.getEndPos() catch {return;};
+
+        // Create the writer
+        var write_buffer: [100]u8 = undefined;
+        var file_writer = std.fs.File.Writer.init(hf, &write_buffer);
+        const writer = &file_writer.interface;
+
+        // Set the seek position to the end of the file so we can append the new
+        // text
+        file_writer.seekTo(end) catch {return;};
+
+        for (self.array_list.items) |line| {
+            // Lines are 0 terminated strings. We replace them with returns
+            line[line.len-1] = '\n';
+            _ = writer.write(line) catch {return;};
+        }
+
+        _ =  writer.flush() catch {};
+        return;
     }
 
     pub fn deinit(self: *HistoryManager, allocator: Allocator) void {

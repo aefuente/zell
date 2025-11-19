@@ -40,6 +40,7 @@ pub fn main() !void {
 
     var history = try zell.HistoryManager.init(gpa);
     defer history.deinit(gpa);
+    defer history.save();
 
     const env = std.c.environ;
 
