@@ -39,6 +39,8 @@ pub fn main() !void {
     defer arg_buffer.deinit(gpa);
 
     var history = try zell.HistoryManager.init(gpa);
+    try history.load_history(gpa);
+
     defer history.deinit(gpa);
     defer history.save();
 

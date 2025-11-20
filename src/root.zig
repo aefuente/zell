@@ -80,10 +80,12 @@ pub const Terminal = struct {
 };
 
 pub const HistoryManager = struct {
+    history_file: std.fs.File,
     array_list: std.ArrayList([]u8),
 
     pub fn init(allocator: Allocator) !HistoryManager {
         return .{
+            .history_file = try get_history_file(),
             .array_list = try std.ArrayList([]u8).initCapacity(allocator, 10),
         };
     }
@@ -101,21 +103,10 @@ pub const HistoryManager = struct {
     }
 
     pub fn save(self: *HistoryManager) void {
-        // Open the history file
-        const hf = get_history_file() catch { return; };
-        defer hf.close();
-
-        // Get the end position of the file
-        const end = hf.getEndPos() catch {return;};
-
         // Create the writer
         var write_buffer: [100]u8 = undefined;
-        var file_writer = std.fs.File.Writer.init(hf, &write_buffer);
+        var file_writer = std.fs.File.Writer.init(self.history_file, &write_buffer);
         const writer = &file_writer.interface;
-
-        // Set the seek position to the end of the file so we can append the new
-        // text
-        file_writer.seekTo(end) catch {return;};
 
         for (self.array_list.items) |line| {
             // Lines are 0 terminated strings. We replace them with returns
@@ -127,7 +118,31 @@ pub const HistoryManager = struct {
         return;
     }
 
+    pub fn load_history(self: *HistoryManager, allocator: Allocator) !void {
+        var read_buffer: [100]u8 = undefined;
+        var file_reader = std.fs.File.Reader.init(self.history_file, &read_buffer);
+        const reader = &file_reader.interface;
+
+        while (true) {
+
+            var writer = std.io.Writer.Allocating.init(allocator);
+            defer writer.deinit();
+            const size = reader.streamDelimiter(&writer.writer, '\n') catch {
+                break;
+            };
+            // Stream is not inclusive so throw away the \n
+            _ = try reader.takeByte();
+            // We expect our strings to be 0 terminated
+            try writer.writer.writeByte(0);
+            const line = try writer.toOwnedSlice();
+            if (size != 0) {
+                try self.array_list.append(allocator, line);
+            }
+        }
+    }
+
     pub fn deinit(self: *HistoryManager, allocator: Allocator) void {
+        self.history_file.close();
         for (self.array_list.items) |line| {
             allocator.free(line);
         }
@@ -178,7 +193,9 @@ pub fn read_line(
         else if (c == '\n') {
             try stdout.print("\n", .{});
             try stdout.flush();
-            try array_list.append(allocator, 0);
+            if (array_list.items.len > 0) {
+                try array_list.append(allocator, 0);
+            }
             break;
         }
 
