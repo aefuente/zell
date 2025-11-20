@@ -8,6 +8,7 @@ const builtIns = [_][]const u8 {"cd"};
 const COMMAND_BUF_INIT_CAP: usize = 50;
 const ARG_BUF_INIT_CAP: usize = 10;
 
+const STDOUT_BUF_SIZE: usize = 1024;
 
 
 pub fn main() !void {
@@ -22,6 +23,13 @@ pub fn main() !void {
     defer terminal.set_cooked();
     defer terminal.deinit();
 
+
+    // Initialize stdout writer so we can print to screen
+    var stdout_buffer: [STDOUT_BUF_SIZE]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+
     // Initialize command array list. Will be used to hold the data interpreted
     // from raw tty input
     var command_buffer = try std.ArrayList(u8).initCapacity(gpa, COMMAND_BUF_INIT_CAP);
@@ -30,19 +38,31 @@ pub fn main() !void {
     var arg_buffer = try std.ArrayList(?[*:0]u8).initCapacity(gpa, ARG_BUF_INIT_CAP);
     defer arg_buffer.deinit(gpa);
 
+    var history = try zell.HistoryManager.init(gpa);
+    try history.load_history(gpa);
+
+    defer history.deinit(gpa);
+    defer history.save();
 
     const env = std.c.environ;
 
     while (true) {
+
+        // Print out the starting prompt
+        try stdout.print("zell>> ",.{});
+        try stdout.flush();
+
         // When starting the loop dump old data
         command_buffer.clearRetainingCapacity();
         arg_buffer.clearRetainingCapacity();
 
-        try zell.read_line(gpa, &command_buffer, &terminal);
+        try zell.read_line(gpa, &history, stdout, &command_buffer, &terminal);
 
         if (command_buffer.items.len == 0) {
             continue;
         }
+
+        try history.store(gpa, command_buffer.items);
 
         var i: usize = 0;
         var n: usize = 0;
@@ -66,6 +86,11 @@ pub fn main() !void {
 
         if (std.mem.eql(u8, command, "exit")) {
             return;
+        }
+
+        if (std.mem.eql(u8, command, "history")) {
+            try history.print();
+            continue;
         }
 
         if (is_builtin(command)) {

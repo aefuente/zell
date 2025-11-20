@@ -1,5 +1,9 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const File = std.fs.File;
+const linux = std.os.linux;
+const posix = std.posix;
 
 // Constant decimal values for key presses
 const ESC = '\x1b';
@@ -11,24 +15,36 @@ const LEFT_ARROW = '\x44';
 const BACKSPACE = 127;
 const CTRL_C = 3;
 
-
-const STDOUT_BUF_SIZE: usize = 1024;
 const STDIN_BUF_SIZE: usize = 50;
+
+const history_file = ".zell_history";
+
+
+fn get_history_file() !File {
+    if (posix.getenv("HOME")) |home |{
+        const home_dir = try std.fs.openDirAbsolute(home, .{});
+        home_dir.access(history_file, .{}) catch {
+            return try home_dir.createFile(history_file, .{});
+        };
+        return home_dir.openFile(history_file, .{.mode = .read_write});
+    }
+    return error.MissingHomeDirectory;
+}
 
 
 pub const Terminal = struct {
-    tty_file: std.fs.File,
-    raw_settings: std.os.linux.termios,
-    cooked_settings: std.os.linux.termios,
+    tty_file: File,
+    raw_settings: linux.termios,
+    cooked_settings: linux.termios,
 
     pub fn init() !Terminal {
         const tty_file = try std.fs.openFileAbsolute("/dev/tty", .{});
 
-        var cooked_settings: std.os.linux.termios = undefined;
+        var cooked_settings: linux.termios = undefined;
         _ = std.os.linux.tcgetattr(tty_file.handle, &cooked_settings);
 
         // Holds the raw settings listed below
-        var raw_settings: std.os.linux.termios = cooked_settings;
+        var raw_settings: linux.termios = cooked_settings;
 
         // In noncanonical mode input is available immediately. Essentially we
         // don't have to wait for new line characters to receive the data and we
@@ -52,10 +68,10 @@ pub const Terminal = struct {
     }
 
     pub fn set_raw(self: Terminal) void {
-        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.raw_settings);
+        _ = linux.tcsetattr(self.tty_file.handle, linux.TCSA.NOW, &self.raw_settings);
     }
     pub fn set_cooked(self: Terminal) void {
-        _ = std.os.linux.tcsetattr(self.tty_file.handle, std.os.linux.TCSA.NOW, &self.cooked_settings);
+        _ = linux.tcsetattr(self.tty_file.handle, linux.TCSA.NOW, &self.cooked_settings);
     }
 
     pub fn deinit(self: Terminal) void {
@@ -63,23 +79,87 @@ pub const Terminal = struct {
     }
 };
 
+pub const HistoryManager = struct {
+    history_file: std.fs.File,
+    array_list: std.ArrayList([]u8),
+
+    pub fn init(allocator: Allocator) !HistoryManager {
+        return .{
+            .history_file = try get_history_file(),
+            .array_list = try std.ArrayList([]u8).initCapacity(allocator, 10),
+        };
+    }
+
+    pub fn store(self: *HistoryManager, allocator: Allocator, line: []u8) !void {
+        var history_line = try allocator.alloc(u8, line.len);
+        @memcpy(history_line[0..],line);
+        try self.array_list.append(allocator, history_line);
+    }
+
+    pub fn print(self: *HistoryManager) !void {
+        for (0.., self.array_list.items) |index, line| {
+            std.debug.print("{d} {s}\n", .{index, line});
+        }
+    }
+
+    pub fn save(self: *HistoryManager) void {
+        // Create the writer
+        var write_buffer: [100]u8 = undefined;
+        var file_writer = std.fs.File.Writer.init(self.history_file, &write_buffer);
+        const writer = &file_writer.interface;
+
+        for (self.array_list.items) |line| {
+            // Lines are 0 terminated strings. We replace them with returns
+            line[line.len-1] = '\n';
+            _ = writer.write(line) catch {return;};
+        }
+
+        _ =  writer.flush() catch {};
+        return;
+    }
+
+    pub fn load_history(self: *HistoryManager, allocator: Allocator) !void {
+        var read_buffer: [100]u8 = undefined;
+        var file_reader = std.fs.File.Reader.init(self.history_file, &read_buffer);
+        const reader = &file_reader.interface;
+
+        while (true) {
+
+            var writer = std.io.Writer.Allocating.init(allocator);
+            defer writer.deinit();
+            const size = reader.streamDelimiter(&writer.writer, '\n') catch {
+                break;
+            };
+            // Stream is not inclusive so throw away the \n
+            _ = try reader.takeByte();
+            // We expect our strings to be 0 terminated
+            try writer.writer.writeByte(0);
+            const line = try writer.toOwnedSlice();
+            if (size != 0) {
+                try self.array_list.append(allocator, line);
+            }
+        }
+    }
+
+    pub fn deinit(self: *HistoryManager, allocator: Allocator) void {
+        self.history_file.close();
+        for (self.array_list.items) |line| {
+            allocator.free(line);
+        }
+        self.array_list.deinit(allocator);
+    }
+};
+
 pub fn read_line(
     allocator: std.mem.Allocator,
+    history: *HistoryManager,
+    stdout: *std.Io.Writer,
     array_list: *std.ArrayList(u8),
     termianl: *Terminal
     ) !void {
 
     termianl.set_raw();
     defer termianl.set_cooked();
-
-    // Initialize stdout writer so we can print to screen
-    var stdout_buffer: [STDOUT_BUF_SIZE]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    // Print out the starting prompt
-    try stdout.print("zell>> ",.{});
-    try stdout.flush();
 
     // Initialize the reader for reading stdin
     var read_buf: [STDIN_BUF_SIZE]u8 = undefined;
@@ -88,6 +168,10 @@ pub fn read_line(
 
     // Initialize the cursor position
     var cursor_position: usize = 0;
+
+    // Decided to initialize history_position to max so we can recognize the
+    // "start of history indexing".
+    var history_position: usize = std.math.maxInt(usize);
 
     while (true) {
         // Read the character
@@ -107,9 +191,24 @@ pub fn read_line(
         }
 
         else if (c == '\n') {
+
             try stdout.print("\n", .{});
             try stdout.flush();
-            try array_list.append(allocator, 0);
+
+            var index: isize = @as(isize, @intCast(array_list.items.len)) - 1;
+            // Remove white spaces
+
+            while (index >= 0) {
+                const char = array_list.items[@intCast(index)];
+                if (char != ' ' and char != '\t' and char != '\r') break;
+                index -= 1;
+            }
+
+            array_list.shrinkAndFree(allocator, @intCast(index+1));
+
+            if (array_list.items.len > 0) {
+                try array_list.append(allocator, 0);
+            }
             break;
         }
 
@@ -142,13 +241,44 @@ pub fn read_line(
                         try draw_line(stdout, array_list.items, cursor_position);
                         continue;
                     },
-                    // Backwards in history
                     UP_ARROW => {
-                        continue;
+                        // Identity if we are on the "start condition" of moving
+                        // through history
+                        if (history_position == std.math.maxInt(usize)) {
+                            if (history.array_list.items.len == 0) {
+                                history_position = 0;
+                            }else {
+                                history_position = history.array_list.items.len;
+                            }
+
+                        }
+                        if (history_position == 0) {
+                            continue;
+                        }
+                        history_position -= 1;
+                        try array_list.resize(allocator, history.array_list.items[history_position].len);
+                        @memcpy(array_list.items, history.array_list.items[history_position]);
+                        cursor_position = array_list.items.len;
+                        try draw_line(stdout, array_list.items, cursor_position);
                     },
-                    // Forfwards in history
                     DOWN_ARROW => {
-                        continue;
+
+                        if (history_position == std.math.maxInt(usize)) {
+                            continue;
+                        }
+
+                        if (history_position + 1 < history.array_list.items.len) {
+                            history_position += 1;
+                            try array_list.resize(allocator, history.array_list.items[history_position].len);
+                            @memcpy(array_list.items, history.array_list.items[history_position]);
+                            cursor_position = array_list.items.len;
+                            try draw_line(stdout, array_list.items, cursor_position);
+                        }else {
+                            history_position = std.math.maxInt(usize);
+                            cursor_position = 0;
+                            array_list.clearRetainingCapacity();
+                            try draw_line(stdout, array_list.items, cursor_position);
+                        }
                     },
                     else => { }
                 }
