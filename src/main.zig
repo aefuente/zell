@@ -101,7 +101,14 @@ pub fn main() !void {
         const fork_pid = try std.posix.fork();
         if (fork_pid == 0) {
             const result = std.posix.execvpeZ(arg_buffer.items[0].?, @ptrCast(arg_buffer.items), env);
-            std.debug.print("Result: {any}\n", .{result});
+            switch (result) {
+                std.posix.ExecveError.FileNotFound => {
+                    std.debug.print("zell: {s}: command not found\n", .{command});
+                },
+                else => {
+                    std.debug.print("Result: {any}\n", .{result});
+                },
+            }
 
             return;
         } else {
