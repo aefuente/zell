@@ -191,8 +191,21 @@ pub fn read_line(
         }
 
         else if (c == '\n') {
+
             try stdout.print("\n", .{});
             try stdout.flush();
+
+            var index: isize = @as(isize, @intCast(array_list.items.len)) - 1;
+            // Remove white spaces
+
+            while (index >= 0) {
+                const char = array_list.items[@intCast(index)];
+                if (char != ' ' and char != '\t' and char != '\r') break;
+                index -= 1;
+            }
+
+            array_list.shrinkAndFree(allocator, @intCast(index+1));
+
             if (array_list.items.len > 0) {
                 try array_list.append(allocator, 0);
             }
