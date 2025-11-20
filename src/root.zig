@@ -141,6 +141,17 @@ pub const HistoryManager = struct {
         }
     }
 
+    pub fn get_suggestion(self: *HistoryManager, query: []const u8) ?[]const u8{
+        for (self.array_list.items) |line| {
+            if (line.len >= query.len) {
+                if (std.mem.eql(u8, query, line[0..query.len])) {
+                    return line;
+                }
+            }
+        }
+        return null;
+    }
+
     pub fn deinit(self: *HistoryManager, allocator: Allocator) void {
         self.history_file.close();
         for (self.array_list.items) |line| {
@@ -235,6 +246,12 @@ pub fn read_line(
                     },
                     RIGHT_ARROW => {
                         if (cursor_position + 1 > array_list.items.len) {
+                            if (history.get_suggestion(array_list.items)) |suggestion| {
+                                try array_list.resize(allocator, suggestion.len-1);
+                                @memcpy(array_list.items, suggestion[0..suggestion.len-1]);
+                                cursor_position = array_list.items.len;
+                                try draw_line(stdout, array_list.items, cursor_position);
+                            }
                             continue;
                         }
                         cursor_position += 1;
@@ -287,10 +304,39 @@ pub fn read_line(
         else {
             try array_list.insert(allocator, cursor_position, c);
             cursor_position +=1;
-            try draw_line(stdout, array_list.items, cursor_position);
+            const suggestion = history.get_suggestion(array_list.items);
+            if (suggestion) |s | {
+                try draw_line_suggestion(stdout, s, array_list.items, cursor_position);
+            }else {
+                try draw_line(stdout, array_list.items, cursor_position);
+            }
         }
     }
 }
+
+fn draw_line_suggestion(writer: *std.Io.Writer, suggestion: []const u8, line: []const u8, cursor_pos: usize) !void {
+    // Write our new line
+    // \r -> start at column 0
+    // zell>> {s} -> print our buffer 
+    // \x1b[K clear what might be there from the previous write
+
+    try writer.print("\rzell>> {s}\x1b[90m{s}\x1b[0m\x1b[K",.{line, suggestion[line.len..]});
+
+    // Calculate where to put the cursor
+    var diff: usize = 0;
+    if (line.len + suggestion.len <= cursor_pos) {
+        diff = 0;
+    }else {
+        diff = line.len - cursor_pos + suggestion[line.len..].len - 1;
+    }
+
+    if (diff != 0) {
+        // Move the cursor to the left
+        try writer.print("\x1b[{d}D", .{diff});
+    }
+    try writer.flush();
+}
+
 
 fn draw_line(writer: *std.Io.Writer, line: []const u8, cursor_pos: usize) !void {
     // Write our new line
@@ -314,4 +360,3 @@ fn draw_line(writer: *std.Io.Writer, line: []const u8, cursor_pos: usize) !void 
 
     try writer.flush();
 }
-
