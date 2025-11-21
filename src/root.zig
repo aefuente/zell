@@ -322,14 +322,15 @@ fn draw_line_suggestion(writer: *std.Io.Writer, suggestion: []const u8, line: []
     // zell>> {s} -> print our buffer 
     // \x1b[K clear what might be there from the previous write
 
-    try writer.print("\rzell>> {s}\x1b[90m{s}\x1b[0m\x1b[K",.{line, suggestion[line.len..]});
+    const suggestion_text = suggestion[line.len..];
+    try writer.print("\rzell>> {s}\x1b[90m{s}\x1b[0m\x1b[K",.{line, suggestion_text});
 
     // Calculate where to put the cursor
     var diff: usize = 0;
     if (line.len + suggestion.len <= cursor_pos) {
         diff = 0;
     }else {
-        diff = line.len - cursor_pos + suggestion[line.len..].len - 1;
+        diff = line.len - cursor_pos + suggestion_text.len - 1;
     }
 
     if (diff != 0) {
