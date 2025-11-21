@@ -17,11 +17,9 @@ pub fn main() !void {
     defer assert(debug_allocator.deinit() == .ok);
     const gpa = debug_allocator.allocator();
 
-
     var arena = std.heap.ArenaAllocator.init(gpa);
     const arena_allocator = arena.allocator();
     defer arena.deinit();
-
 
     // Initialize the terminal struct. It will be used to switch between raw and
     // cooked modes.
@@ -29,13 +27,10 @@ pub fn main() !void {
     defer terminal.set_cooked();
     defer terminal.deinit();
 
-
     // Initialize stdout writer so we can print to screen
     var stdout_buffer: [STDOUT_BUF_SIZE]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
-
-
 
     var history = try zell.HistoryManager.init(gpa);
     try history.load_history(gpa);
@@ -45,23 +40,17 @@ pub fn main() !void {
 
     const env = std.c.environ;
 
-    // Initialize command array list. Will be used to hold the data interpreted
-    // from raw tty input
-    //
-    var command_buffer = try std.ArrayList(u8).initCapacity(gpa, COMMAND_BUF_INIT_CAP);
-    defer command_buffer.deinit(gpa);
-
     while (true) {
+        defer _ = arena.reset(.free_all);
 
-        command_buffer.clearRetainingCapacity();
-
+        var command_buffer = try std.ArrayList(u8).initCapacity(arena_allocator, COMMAND_BUF_INIT_CAP);
         var arg_buffer = try std.ArrayList(?[*:0]u8).initCapacity(arena_allocator, ARG_BUF_INIT_CAP);
 
         // Print out the starting prompt
         try stdout.print("zell>> ",.{});
         try stdout.flush();
 
-        try zell.read_line(gpa, &history, stdout, &command_buffer, &terminal);
+        try zell.read_line(arena_allocator, &history, stdout, &command_buffer, &terminal);
 
         if (command_buffer.items.len == 0) {
             continue;
@@ -71,7 +60,6 @@ pub fn main() !void {
 
         const tokens = try zell.parser.tokenize(arena_allocator, command_buffer.items);
         try zell.parser.set_argv(arena_allocator, tokens, &arg_buffer);
-
 
         const command = std.mem.span(arg_buffer.items[0].?);
 
@@ -112,7 +100,6 @@ pub fn main() !void {
                 std.debug.print("Command returned {}.\n", .{wait_result.status});
             }
         }
-        _ = arena.reset(.free_all);
     }
 }
 

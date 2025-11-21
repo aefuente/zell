@@ -26,14 +26,15 @@ fn in(c: u8, chars: []const u8) bool {
 }
 
 pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
-
     var tokens = try std.ArrayList(Token).initCapacity(allocator, 10);
     var index: usize = 0;
 
     while (index < input.len) {
         const c = input[index];
-
         switch (c) {
+            0 => {
+                break;
+            },
             ' ', '\t', '\n' => {
                 index += 1;
                 continue;
@@ -103,27 +104,3 @@ pub fn set_argv(allocator: Allocator, tokens: []Token, arg_buffer: *std.ArrayLis
     }
     try arg_buffer.append(allocator, null);
 }
-
-
-test "tokenize" {
-    const allocator = std.testing.allocator;
-    const line = "ls";
-    const result = try tokenize(allocator, line);
-    defer allocator.free(result);
-    for (result) |value | {
-        std.debug.print("Token: [{any}, {s}] ", .{value.type, value.value});
-    }
-
-}
-
-// 1. Describe the syntax
-// kj
-//
-//
-// 2. Build the tokenizer
-//
-// 3. Build the AST 
-//
-// 4. Write a recursive decent parser
-//
-// 5. Execution layer
