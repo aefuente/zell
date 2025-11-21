@@ -5,20 +5,19 @@ const File = std.fs.File;
 const linux = std.os.linux;
 const posix = std.posix;
 
-// Constant decimal values for key presses
+// HEX values for key presses
 const ESC = '\x1b';
 const BRACKET = '\x5b';
 const UP_ARROW = '\x41';
 const DOWN_ARROW = '\x42';
 const RIGHT_ARROW = '\x43';
 const LEFT_ARROW = '\x44';
-const BACKSPACE = 127;
-const CTRL_C = 3;
+const BACKSPACE = '\x7F';
+const CTRL_C = '\x03';
 
 const STDIN_BUF_SIZE: usize = 50;
 
 const history_file = ".zell_history";
-
 
 fn get_history_file() !File {
     if (posix.getenv("HOME")) |home |{
@@ -142,7 +141,10 @@ pub const HistoryManager = struct {
     }
 
     pub fn get_suggestion(self: *HistoryManager, query: []const u8) ?[]const u8{
-        for (self.array_list.items) |line| {
+        var index: usize = self.array_list.items.len;
+        while (index > 0) {
+            index -= 1;
+            const line = self.array_list.items[index];
             if (line.len >= query.len) {
                 if (std.mem.eql(u8, query, line[0..query.len])) {
                     return line;
@@ -206,16 +208,16 @@ pub fn read_line(
             try stdout.print("\n", .{});
             try stdout.flush();
 
-            var index: isize = @as(isize, @intCast(array_list.items.len)) - 1;
-            // Remove white spaces
+            var index: usize = array_list.items.len;
 
-            while (index >= 0) {
-                const char = array_list.items[@intCast(index)];
-                if (char != ' ' and char != '\t' and char != '\r') break;
+            // Remove white spaces
+            while (index > 0) {
                 index -= 1;
+                const char = array_list.items[index];
+                if (char != ' ' and char != '\t' and char != '\r') break;
             }
 
-            array_list.shrinkAndFree(allocator, @intCast(index+1));
+            array_list.shrinkAndFree(allocator, index+1);
 
             if (array_list.items.len > 0) {
                 try array_list.append(allocator, 0);
