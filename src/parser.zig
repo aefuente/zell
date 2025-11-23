@@ -56,33 +56,70 @@ fn needs_expanding(pattern: []const u8) bool{
     return false;
 }
 
-pub fn expand_command(allocator: Allocator, word: []const u8) !?[]u8 {
+pub fn expand_command(allocator: Allocator, word: []const u8) !?[][*:0]u8 {
+
     if (! needs_expanding(word)) {
         return null;
     }
 
-    var matches = try std.ArrayList([]u8).initCapacity(allocator, 5);
-
-    // Need to open the directory that word is pointing to... if pointing to
-    // directory
-    const cwd = try std.fs.cwd().openDir("./", .{.iterate= true});
-    defer cwd.close();
-
-    var iterator = cwd.iterate();
-    while (try iterator.next()) | file | {
-        if (match_glob(word, file.name)) {
-            matches.append(allocator, file.name);
+    var matches = try std.ArrayList([*:0]u8).initCapacity(allocator, 5);
+    var dir_pos: usize = std.math.maxInt(usize);
+    for (word, 0..) |char, index| {
+        if (char == '/') {
+            dir_pos = index;
         }
     }
+
+    var dir: std.fs.Dir = undefined;
+    defer dir.close();
+
+    if (dir_pos != std.math.maxInt(usize)) {
+        if (std.fs.path.isAbsolute(word[0..dir_pos])) {
+            dir = try std.fs.openDirAbsolute(word[0..dir_pos], .{ .iterate = true });
+        }else {
+            dir = try std.fs.cwd().openDir(word[0..dir_pos], .{ .iterate = true});
+        }
+
+        const dir_name = word[0..dir_pos];
+
+        var iterator = dir.iterate();
+        while (try iterator.next()) | file | {
+            const file_path = try std.fs.path.joinZ(allocator, &[_][]const u8{dir_name, file.name});
+            if (match_glob(word, file_path)) {
+                try matches.append(allocator, file_path);
+            }
+        }
+
+    } else {
+        dir = try std.fs.cwd().openDir("./", .{.iterate = true});
+        var iterator = dir.iterate();
+        while (try iterator.next()) | file | {
+            if (match_glob(word, file.name)) {
+                const file_name = try std.mem.Allocator.dupeZ(allocator, u8, file.name);
+                try matches.append(allocator, file_name);
+            }
+        }
+    }
+
+    return try matches.toOwnedSlice(allocator);
 }
 
 pub fn set_argv(allocator: Allocator, tokens: []Token, arg_buffer: *std.ArrayList(?[*:0]u8)) !void {
+
     for (tokens) |token| {
         if (token.type == TokenType.Word) {
-            const cstr: ?[*:0]u8 = try std.mem.Allocator.dupeZ( allocator, u8, token.value);
-            try arg_buffer.append(allocator, cstr);
+            const expansion = try expand_command(allocator, token.value);
+            if (expansion) |result| {
+                for (result) |value | {
+                    try arg_buffer.append(allocator, value);
+                }
+            } else {
+                const cstr: ?[*:0]u8 = try std.mem.Allocator.dupeZ( allocator, u8, token.value);
+                try arg_buffer.append(allocator, cstr);
+            }
         }
     }
+
     try arg_buffer.append(allocator, null);
 }
 
@@ -153,7 +190,7 @@ pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
 
             else => {
                 const start = index;
-                while (index < input.len and ! in(input[index], " \t\n|><&")) : (index += 1) {}
+                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
                 try tokens.append(allocator, .{ .type = .Word, .value = input[start..index] });
             },
         }

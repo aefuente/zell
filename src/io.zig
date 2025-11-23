@@ -62,8 +62,8 @@ pub const HistoryManager = struct {
 
         for (self.array_list.items) |line| {
             // Lines are 0 terminated strings. We replace them with returns
-            line[line.len-1] = '\n';
             _ = writer.write(line) catch {return;};
+            _ = writer.writeByte('\n') catch {return;};
         }
 
         _ =  writer.flush() catch {};
@@ -82,10 +82,9 @@ pub const HistoryManager = struct {
             const size = reader.streamDelimiter(&writer.writer, '\n') catch {
                 break;
             };
-            // Stream is not inclusive so throw away the \n
+
             _ = try reader.takeByte();
-            // We expect our strings to be 0 terminated
-            try writer.writer.writeByte(0);
+
             const line = try writer.toOwnedSlice();
             if (size != 0) {
                 try self.array_list.append(allocator, line);
@@ -172,9 +171,6 @@ pub fn read_line(
 
             array_list.shrinkAndFree(allocator, index+1);
 
-            if (array_list.items.len > 0) {
-                try array_list.append(allocator, 0);
-            }
             break;
         }
 
@@ -202,8 +198,8 @@ pub fn read_line(
                     RIGHT_ARROW => {
                         if (cursor_position + 1 > array_list.items.len) {
                             if (history.get_suggestion(array_list.items)) |suggestion| {
-                                try array_list.resize(allocator, suggestion.len-1);
-                                @memcpy(array_list.items, suggestion[0..suggestion.len-1]);
+                                try array_list.resize(allocator, suggestion.len);
+                                @memcpy(array_list.items, suggestion[0..suggestion.len]);
                                 cursor_position = array_list.items.len;
                                 try draw_line(stdout, array_list.items, cursor_position);
                             }
@@ -283,7 +279,7 @@ fn draw_line_suggestion(writer: *std.Io.Writer, suggestion: []const u8, line: []
     if (line.len + suggestion.len <= cursor_pos) {
         diff = 0;
     }else {
-        diff = line.len - cursor_pos + suggestion_text.len - 1;
+        diff = line.len - cursor_pos + suggestion_text.len;
     }
 
     if (diff != 0) {
