@@ -44,7 +44,6 @@ pub fn main() !void {
         defer _ = arena.reset(.free_all);
 
         var command_buffer = try std.ArrayList(u8).initCapacity(arena_allocator, COMMAND_BUF_INIT_CAP);
-        var arg_buffer = try std.ArrayList(?[*:0]u8).initCapacity(arena_allocator, ARG_BUF_INIT_CAP);
 
         // Print out the starting prompt
         try stdout.print("zell>> ",.{});
@@ -58,46 +57,35 @@ pub fn main() !void {
 
         try history.store(gpa, command_buffer.items);
 
-        const tokens = try zell.parser.tokenize(arena_allocator, command_buffer.items);
-        try zell.parser.set_argv(arena_allocator, tokens, &arg_buffer);
+        const ast = try zell.parser.parse(arena_allocator, command_buffer.items);
+        ast.print();
 
-        const command = std.mem.span(arg_buffer.items[0].?);
+        for (ast.pipelines.items) | pipeline| {
+            for (pipeline.commands.items) | commands | {
+                const command = std.mem.span(commands.argv.items[0].?);
 
-        if (command.len == 0) {
-            continue;
-        }
+                if (std.mem.eql(u8, command, "exit")) {
+                    return;
+                }
+                const fork_pid = try std.posix.fork();
+                if (fork_pid == 0) {
+                    const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), env);
+                    switch (result) {
+                        std.posix.ExecveError.FileNotFound => {
+                            std.debug.print("zell: {s}: command not found\n", .{commands.argv.items[0].?});
+                        },
+                        else => {
+                            std.debug.print("Result: {any}\n", .{result});
+                        },
+                    }
 
-        if (std.mem.eql(u8, command, "exit")) {
-            return;
-        }
-
-        if (std.mem.eql(u8, command, "history")) {
-            try history.print();
-            continue;
-        }
-
-        if (is_builtin(command)) {
-            try run_builtin(command, @ptrCast(arg_buffer.items));
-            continue;
-        }
-
-        const fork_pid = try std.posix.fork();
-        if (fork_pid == 0) {
-            const result = std.posix.execvpeZ(arg_buffer.items[0].?, @ptrCast(arg_buffer.items), env);
-            switch (result) {
-                std.posix.ExecveError.FileNotFound => {
-                    std.debug.print("zell: {s}: command not found\n", .{command});
-                },
-                else => {
-                    std.debug.print("Result: {any}\n", .{result});
-                },
-            }
-
-            return;
-        } else {
-            const wait_result = std.posix.waitpid(fork_pid, 0);
-            if (wait_result.status != 0) {
-                std.debug.print("Command returned {}.\n", .{wait_result.status});
+                    return;
+                } else {
+                    const wait_result = std.posix.waitpid(fork_pid, 0);
+                    if (wait_result.status != 0) {
+                        std.debug.print("Command returned {}.\n", .{wait_result.status});
+                    }
+                }
             }
         }
     }
