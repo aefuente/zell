@@ -6,8 +6,11 @@ const TokenType = enum {
     Word,
     Pipe,
     RedirOut,
+    RedirOutApp,
     RedirIn,
+    Semi,
     Background,
+    End,
 };
 
 pub const Token = struct {
@@ -101,6 +104,253 @@ fn in(c: u8, chars: []const u8) bool {
     return false;
 }
 
+// AST
+// GRAMMER:
+// List -> pipline ( Semi Pipeline )*
+// pipeline -> command (Pipe command)*
+// command -> word (word | redirect)*
+// redirect -> RedirIn word
+//             RedirOut word
+//             RedirOutApp word
+const RedirectType = enum {
+    Out,
+    In,
+    App,
+};
+
+const Redirect = struct {
+    redir_type: RedirectType,
+    file_name: []const u8,
+};
+
+const Command = struct {
+    argv: std.ArrayList(?[]const u8),
+    redirects: std.ArrayList(Redirect),
+
+    pub fn init(allocator: Allocator) !*Command {
+        const cm = try allocator.create(Command);
+        cm.argv = try std.ArrayList(?[]const u8).initCapacity(allocator, 10);
+        cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 10);
+        return cm;
+    }
+};
+
+const Pipeline = struct {
+    commands: std.ArrayList(*Command),
+
+    pub fn init(allocator: Allocator) !*Pipeline {
+        const pl = try allocator.create(Pipeline);
+        pl.commands = try std.ArrayList(*Command).initCapacity(allocator, 10);
+        return pl;
+    }
+};
+
+const ListNode = struct {
+    pipelines: std.ArrayList(*Pipeline),
+
+    pub fn init(allocator: Allocator) !*ListNode {
+        const ln = try allocator.create(ListNode);
+        ln.pipelines = try std.ArrayList(*Pipeline).initCapacity(allocator, 10);
+        return ln;
+    }
+};
+
+const ParserState = struct {
+    tokens: []const Token,
+    pos: usize,
+
+    pub fn match(self: *ParserState, token_type: TokenType) bool {
+        if (self.pos < self.tokens.len and self.tokens[self.pos].type == token_type) {
+            return true;
+        }
+        return false;
+    }
+
+    pub fn next(self: *ParserState) void {
+        if (self.pos + 1 < self.tokens.len) {
+            self.pos += 1;
+
+        }
+    }
+
+    pub fn get(self: ParserState) !Token {
+        if (self.pos >= self.tokens.len) {
+            return error.OutOfBounds;
+        }
+        return self.tokens[self.pos];
+    }
+
+    pub fn is_redirect(self: ParserState) bool {
+        if (self.pos >= self.tokens.len) {
+            return false;
+        }
+        const token_type = self.tokens[self.pos].type;
+        return token_type == TokenType.RedirIn or token_type == TokenType.RedirOut or token_type == TokenType.RedirOutApp;
+    }
+};
+
+fn parse_redirect(tokens: *ParserState) !Redirect{
+
+    var rd: Redirect = undefined;
+    if (tokens.is_redirect()) {
+        const token = try tokens.get();
+        var ttype: RedirectType = RedirectType.App;
+        if (token.type == TokenType.RedirIn) {
+            ttype = RedirectType.In;
+        } else if (token.type == TokenType.RedirOut) {
+            ttype = RedirectType.Out;
+        }
+        rd = Redirect{.redir_type = ttype, .file_name = token.value};
+    }else  {
+        return error.ExpectedRedirect;
+    }
+
+    tokens.next();
+
+    const token = try tokens.get();
+
+    if (token.type != TokenType.Word) {
+        return error.ExpectedFileName;
+    }
+    rd.file_name = token.value;
+    tokens.next();
+
+    return rd;
+
+
+}
+
+fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
+
+    const token = tokens.get() catch {
+        return error.ExpectedCommand;
+    };
+    if (token.type != TokenType.Word) {
+        return error.ExpectedCommand;
+    }
+
+    var cm = try Command.init(allocator);
+    try cm.argv.append(allocator, token.value);
+
+    tokens.next();
+
+    while (tokens.match(TokenType.Word) or tokens.is_redirect()) {
+        if (tokens.is_redirect()) {
+            try cm.redirects.append(allocator, try parse_redirect(tokens));
+        }else {
+            const t = try tokens.get();
+            try cm.argv.append(allocator, t.value);
+            tokens.next();
+        }
+    }
+    try cm.argv.append(allocator, null);
+    return cm;
+}
+
+fn parse_pipeline(allocator: Allocator, tokens: *ParserState) !*Pipeline{
+    var pl = try Pipeline.init(allocator);
+
+    try pl.commands.append(allocator, try parse_command(allocator, tokens));
+
+    while (tokens.match(TokenType.Pipe)) {
+        tokens.next();
+        try pl.commands.append(allocator, try parse_command(allocator, tokens));
+    }
+    return pl;
+
+}
+
+fn parse_list(allocator: Allocator, tokens: []Token) !*ListNode {
+
+    var parser_state = ParserState{
+        .tokens = tokens,
+        .pos = 0,
+    };
+    var list = try ListNode.init(allocator);
+    try list.pipelines.append(allocator, try parse_pipeline(allocator, &parser_state));
+
+    while (parser_state.match(TokenType.Semi)) {
+        parser_state.next();
+        try list.pipelines.append(allocator, try parse_pipeline(allocator, &parser_state));
+    }
+
+    return list;
+}
+
+fn print_level(lvl: i32) void {
+    var i: i32 = 0;
+    while (i < lvl) : (i += 1){
+        std.debug.print("  ", .{});
+    }
+
+}
+
+fn print_redirects(rd: Redirect, level: i32) void {
+    print_level(level);
+    var op: []const u8 = undefined;
+
+    if (rd.redir_type == RedirectType.In){
+        op = "<";
+    }
+    else if (rd.redir_type == RedirectType.Out){
+        op = ">";
+    }
+    else {
+        op = ">>";
+    }
+
+    std.debug.print("Redirect: {s} {s}\n", .{op, rd.file_name});
+
+}
+
+
+fn print_command(cm: *Command, level: i32) void {
+    print_level(level);
+    std.debug.print("Command:\n", .{});
+    print_level(level + 2);
+    std.debug.print("Args: ", .{});
+
+    for (cm.argv.items) |arg| {
+        if (arg) |a | {
+            std.debug.print(" {s}", .{a});
+        }
+    }
+    std.debug.print("\n", .{});
+
+    for (cm.redirects.items) |redir| {
+        print_redirects(redir, level + 2);
+
+    }
+
+}
+
+fn print_pipeline(pl: *Pipeline, level: i32) void {
+    print_level(level);
+    for (pl.commands.items) |cm | {
+        print_command(cm, level + 1);
+    }
+}
+
+pub fn print_ast(list: *ListNode) void {
+    std.debug.print("AST List ({d} Piplines):\n", .{list.pipelines.items.len});
+    for (list.pipelines.items) |pipeline | {
+        print_pipeline(pipeline, 1);
+    }
+}
+
+test "parser" {
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    const arena_allocator = arena.allocator();
+    defer arena.deinit();
+
+
+    const tokens = try tokenize(arena_allocator, "cat file.txt > copy.txt\n");
+    const ast = try parse_list(arena_allocator, tokens);
+    print_ast(ast);
+}
+
+
 pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
     var tokens = try std.ArrayList(Token).initCapacity(allocator, 10);
     var index: usize = 0;
@@ -108,10 +358,10 @@ pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
     while (index < input.len) {
         const c = input[index];
         switch (c) {
-            0 => {
+            0, '\n' => {
                 break;
             },
-            ' ', '\t', '\n' => {
+            ' ', '\t' => {
                 index += 1;
                 continue;
             },
@@ -119,7 +369,16 @@ pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 try tokens.append(allocator, Token{.type = TokenType.Pipe, .value = "|"});
                 index += 1;
             },
+            ';' => {
+                try tokens.append(allocator, Token{.type = TokenType.Semi, .value = ";"});
+                index += 1;
+            },
             '>' => {
+                if (index + 1 < input.len and input[index+1] == '>') {
+                    try tokens.append(allocator, Token{.type = TokenType.RedirOutApp, .value = ">>"});
+                    index += 2;
+                    continue;
+                }
                 try tokens.append(allocator, Token{.type = TokenType.RedirOut, .value = ">"});
                 index += 1;
             },
@@ -165,6 +424,8 @@ pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
         }
 
     }
+
+    try tokens.append(allocator, .{.type = .End, .value = "\n"});
     return try tokens.toOwnedSlice(allocator);
 }
 
@@ -226,47 +487,68 @@ fn test_tokenizer(allocator: Allocator, input: []const u8, result: []const Token
 
 test "test Tokenizer" {
     const allocator = std.testing.allocator;
-    try test_tokenizer(allocator, "ls", &[_]Token{.{.type = TokenType.Word, .value = "ls"}});
-    try test_tokenizer(allocator, "pwd", &[_]Token{.{.type = TokenType.Word, .value = "pwd"}});
-    try test_tokenizer(allocator, "whoami", &[_]Token{.{.type = TokenType.Word, .value = "whoami"}});
-    try test_tokenizer(allocator, "date", &[_]Token{.{.type = TokenType.Word, .value = "date"}});
+    try test_tokenizer(allocator, "ls\n", &[_]Token{
+        .{.type = TokenType.Word, .value = "ls"},
+        .{.type = TokenType.End, .value = "\n"},
+    });
+    try test_tokenizer(allocator, "pwd", &[_]Token{
+        .{.type = TokenType.Word, .value = "pwd"},
+        .{.type = TokenType.End, .value = "\n"},
+    });
+    try test_tokenizer(allocator, "whoami", &[_]Token{
+        .{.type = TokenType.Word, .value = "whoami"},
+        .{.type = TokenType.End, .value = "\n"},
+    });
+    try test_tokenizer(allocator, "date", &[_]Token{
+        .{.type = TokenType.Word, .value = "date"},
+        .{.type = TokenType.End, .value = "\n"},
+    });
 
     try test_tokenizer(allocator, "echo hello", &[_]Token{
         .{.type = TokenType.Word, .value = "echo"}, 
         .{.type = TokenType.Word, .value = "hello"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "echo \"Hello World\"", &[_]Token{
         .{.type = TokenType.Word, .value = "echo"},
         .{.type = TokenType.Word, .value = "Hello World"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "cd /usr/local", &[_]Token{
         .{.type = TokenType.Word, .value = "cd"},
         .{.type = TokenType.Word, .value = "/usr/local"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "mkdir test_dir", &[_]Token{
         .{.type = TokenType.Word, .value = "mkdir"},
         .{.type = TokenType.Word, .value = "test_dir"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "rm -rf /tmp/myfile", &[_]Token{
         .{.type = TokenType.Word, .value = "rm"},
         .{.type = TokenType.Word, .value = "-rf"},
         .{.type = TokenType.Word, .value = "/tmp/myfile"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "touch file.txt", &[_]Token{
         .{.type = TokenType.Word, .value = "touch"},
         .{.type = TokenType.Word, .value = "file.txt"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "cat file.txt", &[_]Token{
         .{.type = TokenType.Word, .value = "cat"},
         .{.type = TokenType.Word, .value = "file.txt"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "echo \"A quoted string\"", &[_]Token{
         .{.type = TokenType.Word, .value = "echo"},
         .{.type = TokenType.Word, .value = "A quoted string"},
+        .{.type = TokenType.End, .value = "\n"},
     });
     try test_tokenizer(allocator, "echo \'single quotes\'", &[_]Token{
         .{.type = TokenType.Word, .value = "echo"},
         .{.type = TokenType.Word, .value = "single quotes"},
+        .{.type = TokenType.End, .value = "\n"},
     });
 
 }
