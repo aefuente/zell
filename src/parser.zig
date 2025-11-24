@@ -15,37 +15,6 @@ pub const Token = struct {
     value: []const u8,
 };
 
-fn match_glob(pattern: []const u8, name: []const u8) bool{
-
-    var name_index: usize = 0;
-    var pattern_index: usize = 0;
-
-    while (pattern_index < pattern.len) {
-        if (pattern[pattern_index] == '*') {
-            pattern_index += 1;
-            if (pattern_index == pattern.len) return true;
-            while (name_index < name.len) {
-                if (match_glob(pattern[pattern_index..], name[name_index..])) return true;
-                name_index += 1;
-            }
-            return false;
-        }
-        else {
-            if (name_index >= name.len or name[name_index] != pattern[pattern_index]) return false;
-            name_index += 1;
-            pattern_index += 1;
-        }
-    }
-    return name_index == name.len;
-}
-
-test "match glob" {
-    try std.testing.expect(match_glob("*.txt", "file.txt"));
-    try std.testing.expect(match_glob("f*.txt", "file.txt"));
-    try std.testing.expect(match_glob("fi*.txt", "file.txt"));
-    try std.testing.expect(match_glob("fi*", "file.txt"));
-    try std.testing.expect(match_glob("fi*", "fired"));
-}
 
 fn needs_expanding(pattern: []const u8) bool{
     for (pattern) |char | {
@@ -197,6 +166,48 @@ pub fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
 
     }
     return try tokens.toOwnedSlice(allocator);
+}
+
+fn match_glob(pattern: []const u8, name: []const u8) bool{
+
+    var name_index: usize = 0;
+    var pattern_index: usize = 0;
+
+    while (pattern_index < pattern.len) {
+        if (pattern[pattern_index] == '*') {
+            pattern_index += 1;
+            if (pattern_index == pattern.len) return true;
+            while (name_index < name.len) {
+                if (match_glob(pattern[pattern_index..], name[name_index..])) return true;
+                name_index += 1;
+            }
+            return false;
+        }
+        else {
+            if (name_index >= name.len or name[name_index] != pattern[pattern_index]) return false;
+            name_index += 1;
+            pattern_index += 1;
+        }
+    }
+    return name_index == name.len;
+}
+
+test "match glob" {
+    try std.testing.expect(match_glob("*.txt", "file.txt"));
+    try std.testing.expect(match_glob("t*t", "tt"));
+    try std.testing.expect(match_glob("*.txt", ".txt"));
+    try std.testing.expect(match_glob("tt*", "ttxtt"));
+    try std.testing.expect(match_glob("f*.txt", "file.txt"));
+    try std.testing.expect(match_glob("fi*.txt", "file.txt"));
+    try std.testing.expect(match_glob("fi*", "file.txt"));
+    try std.testing.expect(match_glob("fi*", "fired"));
+    try std.testing.expect(!match_glob("*.txt", "txt"));
+    try std.testing.expect(!match_glob("*.txt", "t"));
+    try std.testing.expect(!match_glob("t*t", "ttx"));
+    try std.testing.expect(!match_glob("t*t", "xtt"));
+    try std.testing.expect(!match_glob("t*t", "xtxt"));
+    try std.testing.expect(!match_glob("tt*", "xtt"));
+    try std.testing.expect(!match_glob("tt*", "txttx"));
 }
 
 fn test_tokenizer(allocator: Allocator, input: []const u8, result: []const Token) !void {
