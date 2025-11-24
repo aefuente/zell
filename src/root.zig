@@ -6,4 +6,5 @@ pub const Terminal = @import("terminal.zig").Terminal;
 pub const HistoryManager = @import("io.zig").HistoryManager;
 pub const read_line = @import("io.zig").read_line;
 pub const parser = @import("parser.zig");
+pub const eval = @import("evaluate.zig");
 

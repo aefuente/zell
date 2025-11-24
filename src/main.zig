@@ -38,7 +38,7 @@ pub fn main() !void {
     defer history.deinit(gpa);
     defer history.save();
 
-    const env = std.c.environ;
+    //const env = std.c.environ;
 
     while (true) {
         defer _ = arena.reset(.free_all);
@@ -60,34 +60,37 @@ pub fn main() !void {
         const ast = try zell.parser.parse(arena_allocator, command_buffer.items);
         ast.print();
 
-        for (ast.pipelines.items) | pipeline| {
-            for (pipeline.commands.items) | commands | {
-                const command = std.mem.span(commands.argv.items[0].?);
+        _ = try zell.eval.evaluate(arena_allocator, ast);
+        //std.debug.print("code: {d}\nresult: {s}\n", .{result.code, result.output});
 
-                if (std.mem.eql(u8, command, "exit")) {
-                    return;
-                }
-                const fork_pid = try std.posix.fork();
-                if (fork_pid == 0) {
-                    const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), env);
-                    switch (result) {
-                        std.posix.ExecveError.FileNotFound => {
-                            std.debug.print("zell: {s}: command not found\n", .{commands.argv.items[0].?});
-                        },
-                        else => {
-                            std.debug.print("Result: {any}\n", .{result});
-                        },
-                    }
+        //for (ast.pipelines.items) | pipeline| {
+        //    for (pipeline.commands.items) | commands | {
+        //        const command = std.mem.span(commands.argv.items[0].?);
 
-                    return;
-                } else {
-                    const wait_result = std.posix.waitpid(fork_pid, 0);
-                    if (wait_result.status != 0) {
-                        std.debug.print("Command returned {}.\n", .{wait_result.status});
-                    }
-                }
-            }
-        }
+        //        if (std.mem.eql(u8, command, "exit")) {
+        //            return;
+        //        }
+        //        const fork_pid = try std.posix.fork();
+        //        if (fork_pid == 0) {
+        //            const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), env);
+        //            switch (result) {
+        //                std.posix.ExecveError.FileNotFound => {
+        //                    std.debug.print("zell: {s}: command not found\n", .{commands.argv.items[0].?});
+        //                },
+        //                else => {
+        //                    std.debug.print("Result: {any}\n", .{result});
+        //                },
+        //            }
+
+        //            return;
+        //        } else {
+        //            const wait_result = std.posix.waitpid(fork_pid, 0);
+        //            if (wait_result.status != 0) {
+        //                std.debug.print("Command returned {}.\n", .{wait_result.status});
+        //            }
+        //        }
+        //    }
+        //}
     }
 }
 
