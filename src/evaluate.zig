@@ -3,74 +3,101 @@ const parser = @import("parser.zig");
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 
-pub const evalResult = struct {
-    exit_code: i32,
-    output: []u8,
-};
+const builtIns = [_][]const u8 {"cd", "exit"};
 
-pub fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
+pub fn run(allocator: Allocator, ast: *parser.AST) !void {
+    for (ast.pipelines.items) |pipeline| {
+        try evaluatePipeline(allocator, pipeline);
+    }
+}
 
+fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
     const n = pipeline.commands.items.len;
+
     if (n == 0) {
         return;
     }
 
-    var pipes = try allocator.alloc([2]posix.fd_t, n);
-
-    for (pipes, 0..) |_, i| {
-        pipes[i] = try posix.pipe();
+    const command = std.mem.span(pipeline.commands.items[0].argv.items[0].?);
+    if (is_builtin(command)) {
+        try run_builtin(command, @ptrCast(pipeline.commands.items[0].argv.items));
+        return;
     }
 
-    var procs = try allocator.alloc(std.process.Child, n);
+    var pipe: [2]posix.fd_t = undefined;
+    var prev_read: i32 = -1;
+    var pids = try std.ArrayList(i32).initCapacity(allocator, 3);
+    const env = std.c.environ;
 
-    for (pipeline.commands.items, 0..) |cmd, i | {
-
-        var proc = std.process.Child.init(@ptrCast(cmd.argv.items), allocator);
-
-        const first = i == 0;
-        const last = i == n - 1;
-
-        if (!first) {
-            proc.stdin = std.fs.File{ .handle = pipes[i-1][0] };
+    for (pipeline.commands.items, 0..) | commands, i|{
+        if (i < n - 1) {
+            pipe = try posix.pipe();
         }
 
-        if (!last) {
-            proc.stdout = std.fs.File{ .handle = pipes[i][1] };
-        }else {
-            proc.stdout_behavior = .Pipe;
+        const fork_pid = try std.posix.fork();
+
+        if (fork_pid == 0){
+            if (prev_read != -1) {
+                try posix.dup2(prev_read, posix.STDIN_FILENO);
+            }
+
+            if (i < n - 1) {
+                try posix.dup2(pipe[1], posix.STDOUT_FILENO);
+            }
+
+            if (prev_read != -1) {
+                posix.close(prev_read);
+            }
+
+            if (i < n - 1){
+                posix.close(pipe[0]);
+                posix.close(pipe[1]);
+            }
+
+            const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), env);
+            switch (result) {
+                std.posix.ExecveError.FileNotFound => {
+                    std.debug.print("zell: {s}: command not found\n", .{commands.argv.items[0].?});
+                },
+                else => {
+                    std.debug.print("Result: {any}\n", .{result});
+                },
+            }
+            return;
         }
 
-        try proc.spawn();
-        procs[i] = proc;
+        try pids.append(allocator, fork_pid);
 
+        if (prev_read != - 1) {
+            posix.close(prev_read);
+        }
+
+        if (i < n - 1) {
+            posix.close(pipe[1]);
+            prev_read = pipe[0];
+        }
     }
 
-    for (pipes) |pipe| {
-        posix.close(pipe[0]);
-        posix.close(pipe[1]);
+    for (pids.items) |pid| {
+        _ = posix.waitpid(pid, 0);
     }
-
-    for (procs[0 .. n - 1]) |*p| {
-        _ = try p.wait();
-    }
-    var last = &procs[n - 1];
-
-    var buf: [100]u8 = undefined;
-
-    if (last.stdout) |out_stream| {
-        var reader = out_stream.reader(&buf);
-        const reader_int = &reader.interface;
-        const output = try reader_int.readAlloc(allocator, 100);
-        std.debug.print("buf: {s}", .{output});
-    }
-
-    _ = try last.wait();
-
 }
 
-pub fn evaluate(allocator: Allocator, ast: *parser.AST) !void {
-    for (ast.pipelines.items) |pipeline_ptr| {
-        var pipeline = pipeline_ptr.*;
-        try evaluatePipeline(allocator, &pipeline);
+fn is_builtin(command: []const u8) bool {
+    for (builtIns) |builtin| {
+        if (std.mem.eql(u8, builtin, command)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn run_builtin(command: []const u8, args: [:null]const?[*:0]const u8) !void {
+    if (std.mem.eql(u8, command, "cd")) {
+        std.posix.chdirZ(args[1].?) catch | err | {
+            std.debug.print("{any}\n", .{err});
+        };
+    }else if (std.mem.eql(u8, command, "exit")) {
+        std.process.exit(0);
     }
 }
