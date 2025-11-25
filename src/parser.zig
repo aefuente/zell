@@ -52,7 +52,7 @@ const Command = struct {
     }
 };
 
-const Pipeline = struct {
+pub const Pipeline = struct {
     commands: std.ArrayList(*Command),
 
     pub fn init(allocator: Allocator) !*Pipeline {
@@ -62,7 +62,7 @@ const Pipeline = struct {
     }
 };
 
-const AST = struct {
+pub const AST = struct {
     pipelines: std.ArrayList(*Pipeline),
 
     pub fn init(allocator: Allocator) !*AST {
