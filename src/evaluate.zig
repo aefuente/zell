@@ -29,27 +29,34 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
     var pids = try std.ArrayList(i32).initCapacity(allocator, 3);
     const env = std.c.environ;
 
+
     for (pipeline.commands.items, 0..) | commands, i|{
-        if (i < n - 1) {
+
+        const notLast = i < n - 1;
+        const notStart = prev_read != -1;
+
+        if (notLast) {
             pipe = try posix.pipe();
         }
 
         const fork_pid = try std.posix.fork();
 
-        if (fork_pid == 0){
-            if (prev_read != -1) {
+        // 0 is child
+        if (fork_pid == 0) {
+
+            if (notStart) {
                 try posix.dup2(prev_read, posix.STDIN_FILENO);
             }
 
-            if (i < n - 1) {
+            if (notLast) {
                 try posix.dup2(pipe[1], posix.STDOUT_FILENO);
             }
 
-            if (prev_read != -1) {
+            if (notStart) {
                 posix.close(prev_read);
             }
 
-            if (i < n - 1){
+            if (notLast){
                 posix.close(pipe[0]);
                 posix.close(pipe[1]);
             }
@@ -63,16 +70,16 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
                     std.debug.print("Result: {any}\n", .{result});
                 },
             }
-            return;
+            std.process.exit(1);
         }
 
         try pids.append(allocator, fork_pid);
 
-        if (prev_read != - 1) {
+        if (notStart) {
             posix.close(prev_read);
         }
 
-        if (i < n - 1) {
+        if (notLast) {
             posix.close(pipe[1]);
             prev_read = pipe[0];
         }
@@ -81,6 +88,7 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
     for (pids.items) |pid| {
         _ = posix.waitpid(pid, 0);
     }
+
 }
 
 fn is_builtin(command: []const u8) bool {
