@@ -29,7 +29,6 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
     var pids = try std.ArrayList(i32).initCapacity(allocator, 3);
     const env = std.c.environ;
 
-
     for (pipeline.commands.items, 0..) | commands, i|{
 
         const notLast = i < n - 1;
@@ -46,17 +45,11 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
 
             if (notStart) {
                 try posix.dup2(prev_read, posix.STDIN_FILENO);
+                posix.close(prev_read);
             }
 
             if (notLast) {
                 try posix.dup2(pipe[1], posix.STDOUT_FILENO);
-            }
-
-            if (notStart) {
-                posix.close(prev_read);
-            }
-
-            if (notLast){
                 posix.close(pipe[0]);
                 posix.close(pipe[1]);
             }
