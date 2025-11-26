@@ -31,6 +31,7 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
 
     for (pipeline.commands.items, 0..) | commands, i|{
 
+
         const notLast = i < n - 1;
         const notStart = prev_read != -1;
 
