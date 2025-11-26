@@ -172,7 +172,6 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         }else {
             const t = try tokens.get();
             if (t.type == TokenType.Word and needs_expanding(t.value)) {
-                std.debug.print("token expand: {d} {s}\n", .{t.value.len, t.value});
                 const expanded = try expand_command(allocator, t.value);
                 try cm.argv.appendSlice(allocator, expanded);
             }else {
