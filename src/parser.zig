@@ -132,15 +132,17 @@ fn parse_redirect(tokens: *ParserState) !Redirect{
 
     const token = try tokens.get();
 
-    if (token.type != TokenType.Word) {
+    if (! is_word(token.type)) {
         return error.ExpectedFileName;
     }
     rd.file_name = token.value;
     tokens.next();
 
     return rd;
+}
 
-
+fn is_word(token_type: TokenType) bool {
+    return token_type == TokenType.WordLiteral or token_type == TokenType.Word;
 }
 
 fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
@@ -148,24 +150,38 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
     const token = tokens.get() catch {
         return error.ExpectedCommand;
     };
-    if (token.type != TokenType.Word) {
+
+    if (! is_word(token.type)) {
         return error.ExpectedCommand;
     }
 
     var cm = try Command.init(allocator);
-    try cm.argv.append(allocator, token.value);
+
+    if (token.type == TokenType.Word and needs_expanding(token.value)) {
+        const expanded = try expand_command(allocator, token.value);
+        try cm.argv.appendSlice(allocator, expanded);
+    }else {
+        try cm.argv.append(allocator, token.value);
+    }
 
     tokens.next();
 
-    while (tokens.match(TokenType.Word) or tokens.is_redirect()) {
+    while (tokens.match(TokenType.Word) or tokens.match(TokenType.WordLiteral) or tokens.is_redirect()) {
         if (tokens.is_redirect()) {
             try cm.redirects.append(allocator, try parse_redirect(tokens));
         }else {
             const t = try tokens.get();
-            try cm.argv.append(allocator, t.value);
+            if (t.type == TokenType.Word and needs_expanding(t.value)) {
+                std.debug.print("token expand: {d} {s}\n", .{t.value.len, t.value});
+                const expanded = try expand_command(allocator, t.value);
+                try cm.argv.appendSlice(allocator, expanded);
+            }else {
+                try cm.argv.append(allocator, t.value);
+            }
             tokens.next();
         }
     }
+
     try cm.argv.append(allocator, null);
     return cm;
 }
@@ -203,6 +219,7 @@ fn parse_list(allocator: Allocator, tokens: []Token) !*AST {
 
 const TokenType = enum {
     Word,
+    WordLiteral,
     Pipe,
     RedirOut,
     RedirOutApp,
@@ -217,6 +234,12 @@ pub const Token = struct {
     value: [:0]const u8,
 };
 
+fn toCstr(allocator: Allocator, str: []const u8) ![:0]u8 {
+    var cstr: []u8 = try allocator.alloc(u8, str.len + 1);
+    @memcpy(cstr[0..str.len], str);
+    cstr[str.len]  = 0;
+    return @ptrCast(cstr);
+}
 
 fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
     var tokens = try std.ArrayList(Token).initCapacity(allocator, 10);
@@ -258,16 +281,15 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 index += 1;
             },
             '\"' => {
-
                 index += 1;
                 const start = index;
 
-                while (index < input.len and input[index] != '\"') : (index += 1) {}
+                while (index < input.len-1 and input[index] != '\"') : (index += 1) {}
 
                 if (input[index] != '\"') {
                     return error.MissingCloseQuote;
                 }
-                const cstr: [:0]u8 = try std.mem.Allocator.dupeZ(allocator, u8, input[start..index]);
+                const cstr = try toCstr(allocator, input[start..index]);
                 try tokens.append(allocator, .{ .type = .Word, .value = cstr });
                 index += 1;
             },
@@ -280,8 +302,8 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 if (input[index] != '\'') {
                     return error.MissingCloseQuote;
                 }
-                const cstr = try std.mem.Allocator.dupeZ(allocator, u8, input[start..index]);
-                try tokens.append(allocator, .{ .type = .Word, .value = cstr });
+                const cstr = try toCstr(allocator, input[start..index]);
+                try tokens.append(allocator, .{ .type = .WordLiteral, .value = cstr });
                 index += 1;
             },
 
@@ -289,14 +311,10 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 const start = index;
                 while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
 
-                const tmp = input[start..index];
-                var cstr: []u8 = try allocator.alloc(u8, tmp.len + 1);
-                @memcpy(cstr[0..tmp.len], tmp);
-                cstr[tmp.len]  = 0;
-                try tokens.append(allocator, .{ .type = .Word, .value = @ptrCast(cstr) });
+                const cstr = try toCstr(allocator, input[start..index]);
+                try tokens.append(allocator, .{ .type = .Word, .value = cstr });
             },
         }
-
     }
 
     try tokens.append(allocator, .{.type = .End, .value = "\n"});
@@ -304,23 +322,57 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
 }
 
 
-pub fn set_argv(allocator: Allocator, tokens: []Token, arg_buffer: *std.ArrayList(?[*:0]u8)) !void {
+fn needs_expanding(pattern: []const u8) bool{
+    for (pattern) |char | {
+        if (char == '*') {
+            return true;
+        }
+    }
+    return false;
+}
 
-    for (tokens) |token| {
-        if (token.type == TokenType.Word) {
-            const expansion = try expand_command(allocator, token.value);
-            if (expansion) |result| {
-                for (result) |value | {
-                    try arg_buffer.append(allocator, value);
-                }
-            } else {
-                const cstr: ?[*:0]u8 = try std.mem.Allocator.dupeZ( allocator, u8, token.value);
-                try arg_buffer.append(allocator, cstr);
+fn expand_command(allocator: Allocator, word: [:0]const u8) ![]?[*:0]u8 {
+
+    var matches = try std.ArrayList(?[*:0]u8).initCapacity(allocator, 5);
+    var dir_pos: usize = std.math.maxInt(usize);
+    for (word, 0..) |char, index| {
+        if (char == '/') {
+            dir_pos = index;
+        }
+    }
+
+    var dir: std.fs.Dir = undefined;
+    defer dir.close();
+
+    if (dir_pos != std.math.maxInt(usize)) {
+        if (std.fs.path.isAbsolute(word[0..dir_pos])) {
+            dir = try std.fs.openDirAbsolute(word[0..dir_pos], .{ .iterate = true });
+        }else {
+            dir = try std.fs.cwd().openDir(word[0..dir_pos], .{ .iterate = true});
+        }
+
+        const dir_name = word[0..dir_pos];
+
+        var iterator = dir.iterate();
+        while (try iterator.next()) | file | {
+            const file_path = try std.fs.path.joinZ(allocator, &[_][]const u8{dir_name, file.name});
+            if (match_glob(word[0..word.len-1], file_path)) {
+                try matches.append(allocator, file_path);
+            }
+        }
+
+    } else {
+        dir = try std.fs.cwd().openDir("./", .{.iterate = true});
+        var iterator = dir.iterate();
+        while (try iterator.next()) | file | {
+            if (match_glob(word[0..word.len-1], file.name)) {
+                const file_name = try std.mem.Allocator.dupeZ(allocator, u8, file.name);
+                try matches.append(allocator, file_name);
             }
         }
     }
 
-    try arg_buffer.append(allocator, null);
+    return try matches.toOwnedSlice(allocator);
 }
 
 fn in(c: u8, chars: []const u8) bool {
@@ -385,106 +437,6 @@ fn print_pipeline(pl: *Pipeline, level: i32) void {
     for (pl.commands.items) |cm | {
         print_command(cm, level + 1);
     }
-}
-
-fn needs_expanding(pattern: []const u8) bool{
-    for (pattern) |char | {
-        if (char == '*') {
-            return true;
-        }
-    }
-    return false;
-}
-
-pub fn expand_command(allocator: Allocator, word: []const u8) !?[][*:0]u8 {
-
-    if (! needs_expanding(word)) {
-        return null;
-    }
-
-    var matches = try std.ArrayList([*:0]u8).initCapacity(allocator, 5);
-    var dir_pos: usize = std.math.maxInt(usize);
-    for (word, 0..) |char, index| {
-        if (char == '/') {
-            dir_pos = index;
-        }
-    }
-
-    var dir: std.fs.Dir = undefined;
-    defer dir.close();
-
-    if (dir_pos != std.math.maxInt(usize)) {
-        if (std.fs.path.isAbsolute(word[0..dir_pos])) {
-            dir = try std.fs.openDirAbsolute(word[0..dir_pos], .{ .iterate = true });
-        }else {
-            dir = try std.fs.cwd().openDir(word[0..dir_pos], .{ .iterate = true});
-        }
-
-        const dir_name = word[0..dir_pos];
-
-        var iterator = dir.iterate();
-        while (try iterator.next()) | file | {
-            const file_path = try std.fs.path.joinZ(allocator, &[_][]const u8{dir_name, file.name});
-            if (match_glob(word, file_path)) {
-                try matches.append(allocator, file_path);
-            }
-        }
-
-    } else {
-        dir = try std.fs.cwd().openDir("./", .{.iterate = true});
-        var iterator = dir.iterate();
-        while (try iterator.next()) | file | {
-            if (match_glob(word, file.name)) {
-                const file_name = try std.mem.Allocator.dupeZ(allocator, u8, file.name);
-                try matches.append(allocator, file_name);
-            }
-        }
-    }
-
-    return try matches.toOwnedSlice(allocator);
-}
-
-
-fn match_glob(pattern: []const u8, name: []const u8) bool{
-
-    var name_index: usize = 0;
-    var pattern_index: usize = 0;
-
-    while (pattern_index < pattern.len) {
-        if (pattern[pattern_index] == '*') {
-            pattern_index += 1;
-            if (pattern_index == pattern.len) return true;
-            while (name_index < name.len) {
-                if (match_glob(pattern[pattern_index..], name[name_index..])) return true;
-                name_index += 1;
-            }
-            return false;
-        }
-        else {
-            if (name_index >= name.len or name[name_index] != pattern[pattern_index]) return false;
-            name_index += 1;
-            pattern_index += 1;
-        }
-    }
-    return name_index == name.len;
-}
-
-test "match glob" {
-    try std.testing.expect(match_glob("*.txt", "file.txt"));
-    try std.testing.expect(match_glob("t*t", "tt"));
-    try std.testing.expect(match_glob("*.txt", ".txt"));
-    try std.testing.expect(match_glob("tt*", "ttxtt"));
-    try std.testing.expect(match_glob("f*.txt", "file.txt"));
-    try std.testing.expect(match_glob("fi*.txt", "file.txt"));
-    try std.testing.expect(match_glob("fi*", "file.txt"));
-    try std.testing.expect(match_glob("fi*", "fired"));
-    try std.testing.expect(!match_glob("*.txt", "txt"));
-    try std.testing.expect(!match_glob("*.txt", "t"));
-    try std.testing.expect(!match_glob("t*t", "ttx"));
-    try std.testing.expect(!match_glob("t*t", "xtt"));
-    try std.testing.expect(!match_glob("t*t", "xtxt"));
-    try std.testing.expect(!match_glob("tt*", "xtt"));
-    try std.testing.expect(!match_glob("tt*", "txttx"));
 }
 
 fn test_tokenizer(allocator: Allocator, input: []const u8, result: []const Token) !void {
@@ -574,3 +526,47 @@ test "test Tokenizer" {
 
 
 
+
+
+fn match_glob(pattern: []const u8, name: []const u8) bool{
+
+    var name_index: usize = 0;
+    var pattern_index: usize = 0;
+
+    while (pattern_index < pattern.len) {
+        if (pattern[pattern_index] == '*') {
+            pattern_index += 1;
+            if (pattern_index == pattern.len) return true;
+            while (name_index < name.len) {
+                if (match_glob(pattern[pattern_index..], name[name_index..])) return true;
+                name_index += 1;
+            }
+            return false;
+        }
+        else {
+            if (name_index >= name.len or name[name_index] != pattern[pattern_index]) return false;
+            name_index += 1;
+            pattern_index += 1;
+        }
+    }
+    return name_index == name.len;
+}
+
+
+test "match glob" {
+    try std.testing.expect(match_glob("*.txt", "file.txt"));
+    try std.testing.expect(match_glob("t*t", "tt"));
+    try std.testing.expect(match_glob("*.txt", ".txt"));
+    try std.testing.expect(match_glob("tt*", "ttxtt"));
+    try std.testing.expect(match_glob("f*.txt", "file.txt"));
+    try std.testing.expect(match_glob("fi*.txt", "file.txt"));
+    try std.testing.expect(match_glob("fi*", "file.txt"));
+    try std.testing.expect(match_glob("fi*", "fired"));
+    try std.testing.expect(!match_glob("*.txt", "txt"));
+    try std.testing.expect(!match_glob("*.txt", "t"));
+    try std.testing.expect(!match_glob("t*t", "ttx"));
+    try std.testing.expect(!match_glob("t*t", "xtt"));
+    try std.testing.expect(!match_glob("t*t", "xtxt"));
+    try std.testing.expect(!match_glob("tt*", "xtt"));
+    try std.testing.expect(!match_glob("tt*", "txttx"));
+}
