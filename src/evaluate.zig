@@ -39,10 +39,19 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
             pipe = try posix.pipe();
         }
 
+        const redirect: bool = (commands.redirects.items.len > 0);
+
         const fork_pid = try std.posix.fork();
 
         // 0 is child
         if (fork_pid == 0) {
+
+            if (redirect) {
+                const flen = commands.redirects.items[0].file_name.len;
+                const file = try std.fs.cwd().openFile(commands.redirects.items[0].file_name[0..flen-1], .{.mode = .write_only});
+                try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                file.close();
+            }
 
             if (notStart) {
                 try posix.dup2(prev_read, posix.STDIN_FILENO);
@@ -64,10 +73,15 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
                     std.debug.print("Result: {any}\n", .{result});
                 },
             }
+            if (redirect) {
+                posix.close(posix.STDOUT_FILENO);
+            }
+
             std.process.exit(1);
         }
 
         try pids.append(allocator, fork_pid);
+
 
         if (notStart) {
             posix.close(prev_read);
