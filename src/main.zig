@@ -10,7 +10,7 @@ const ARG_BUF_INIT_CAP: usize = 10;
 const STDOUT_BUF_SIZE: usize = 1024;
 
 
-pub fn main() !void {
+pub fn main() !u8 {
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer assert(debug_allocator.deinit() == .ok);
@@ -54,7 +54,17 @@ pub fn main() !void {
         try history.store(gpa, command_buffer.items);
 
         const ast = try zell.parser.parse(arena_allocator, command_buffer.items);
-        _ = try zell.eval.run(arena_allocator, ast);
+
+        zell.eval.run(arena_allocator, ast) catch |err| {
+            switch (err) {
+                error.ExitingShell => {
+                    return 0;
+                },
+                else => {
+                    return 1;
+                }
+            }
+        };
     }
 }
 

@@ -100,6 +100,6 @@ fn run_builtin(command: []const u8, args: [:null]const?[*:0]const u8) !void {
             std.debug.print("{any}\n", .{err});
         };
     }else if (std.mem.eql(u8, command, "exit")) {
-        std.process.exit(0);
+        return error.ExitingShell;
     }
 }
