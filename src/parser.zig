@@ -337,13 +337,13 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
             },
             '2' => {
                 if (index + 2 < input.len and input[index + 1] == '>' and input[index + 2] == '>') {
-                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErrApp, .value = "2>>"});
+                    try tokens.append(allocator, Token{.type = TokenType.RedirErrApp, .value = "2>>"});
                     index += 3;
                     continue;
                 }
 
                 if (index + 1 < input.len and input[index+1] == '>') {
-                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErr, .value = "2>"});
+                    try tokens.append(allocator, Token{.type = TokenType.RedirErr, .value = "2>"});
                     index += 2;
                     continue;
                 }
