@@ -31,7 +31,6 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
 
     for (pipeline.commands.items, 0..) | commands, i|{
 
-
         const notLast = i < n - 1;
         const notStart = prev_read != -1;
 
@@ -39,17 +38,53 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
             pipe = try posix.pipe();
         }
 
-        const redirect: bool = (commands.redirects.items.len > 0);
-
         const fork_pid = try std.posix.fork();
 
         // 0 is child
         if (fork_pid == 0) {
+            for (commands.redirects.items) | redirects | {
+                const redir_type = redirects.redir_type;
+                const file_name = redirects.file_name[0..redirects.file_name.len-1];
+                var file: std.fs.File = undefined;
 
-            if (redirect) {
-                const flen = commands.redirects.items[0].file_name.len;
-                const file = try std.fs.cwd().openFile(commands.redirects.items[0].file_name[0..flen-1], .{.mode = .write_only});
-                try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                switch (redir_type) {
+                    parser.RedirectType.RedirOut => {
+                        file = try std.fs.cwd().createFile(file_name, .{.truncate = true});
+                        try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                    },
+                    parser.RedirectType.RedirOutApp => {
+                        file = try std.fs.cwd().createFile(file_name, .{.read = true, .truncate = false});
+                        const endPos = try file.getEndPos();
+                        try file.seekTo(endPos);
+                        try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                    },
+                    parser.RedirectType.RedirOutErr => {
+                        file = try std.fs.cwd().createFile(file_name, .{.truncate = true});
+                        try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                        try posix.dup2(file.handle, posix.STDERR_FILENO);
+                    },
+                    parser.RedirectType.RedirOutErrApp => {
+                        file = try std.fs.cwd().createFile(file_name, .{.read = true, .truncate = false});
+                        const endPos = try file.getEndPos();
+                        try file.seekTo(endPos);
+                        try posix.dup2(file.handle, posix.STDOUT_FILENO);
+                        try posix.dup2(file.handle, posix.STDERR_FILENO);
+                    },
+                    parser.RedirectType.RedirErr => {
+                        file = try std.fs.cwd().createFile(file_name, .{.truncate = true});
+                        try posix.dup2(file.handle, posix.STDERR_FILENO);
+                    },
+                    parser.RedirectType.RedirErrApp => {
+                        file = try std.fs.cwd().createFile(file_name, .{.read = true, .truncate = false});
+                        const endPos = try file.getEndPos();
+                        try file.seekTo(endPos);
+                        try posix.dup2(file.handle, posix.STDERR_FILENO);
+                    },
+                    parser.RedirectType.RedirIn => {
+                        file = try std.fs.cwd().openFile(file_name, .{.mode = .read_only});
+                        try posix.dup2(file.handle, posix.STDIN_FILENO);
+                    }
+                }
                 file.close();
             }
 
@@ -73,11 +108,7 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
                     std.debug.print("Result: {any}\n", .{result});
                 },
             }
-            if (redirect) {
-                posix.close(posix.STDOUT_FILENO);
-            }
-
-            std.process.exit(1);
+            std.process.exit(0);
         }
 
         try pids.append(allocator, fork_pid);

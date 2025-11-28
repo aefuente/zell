@@ -29,10 +29,14 @@ pub fn parse(allocator: Allocator, input: []const u8) !*AST {
 // redirect -> RedirIn word
 //             RedirOut word
 //             RedirOutApp word
-const RedirectType = enum {
-    Out,
-    In,
-    App,
+pub const RedirectType = enum {
+    RedirOut,
+    RedirOutApp,
+    RedirIn,
+    RedirOutErr,
+    RedirOutErrApp,
+    RedirErr,
+    RedirErrApp,
 };
 
 const Redirect = struct {
@@ -108,7 +112,10 @@ const ParserState = struct {
             return false;
         }
         const token_type = self.tokens[self.pos].type;
-        return token_type == TokenType.RedirIn or token_type == TokenType.RedirOut or token_type == TokenType.RedirOutApp;
+        return token_type == TokenType.RedirIn or token_type == TokenType.RedirOut 
+        or token_type == TokenType.RedirOutApp or token_type == TokenType.RedirOutErr
+        or token_type == TokenType.RedirOutErrApp or token_type == TokenType.RedirErr
+        or token_type == TokenType.RedirErrApp;
     }
 };
 
@@ -117,12 +124,19 @@ fn parse_redirect(tokens: *ParserState) !Redirect{
     var rd: Redirect = undefined;
     if (tokens.is_redirect()) {
         const token = try tokens.get();
-        var ttype: RedirectType = RedirectType.App;
-        if (token.type == TokenType.RedirIn) {
-            ttype = RedirectType.In;
-        } else if (token.type == TokenType.RedirOut) {
-            ttype = RedirectType.Out;
-        }
+        const ttype: RedirectType =  switch (token.type) {
+            TokenType.RedirIn => RedirectType.RedirIn,
+            TokenType.RedirOut => RedirectType.RedirOut,
+            TokenType.RedirOutApp => RedirectType.RedirOutApp,
+            TokenType.RedirOutErr => RedirectType.RedirOutErr,
+            TokenType.RedirOutErrApp => RedirectType.RedirOutErrApp,
+            TokenType.RedirErr => RedirectType.RedirErr,
+            TokenType.RedirErrApp => RedirectType.RedirErrApp,
+            else => {
+                unreachable;
+            }
+
+        };
         rd = Redirect{.redir_type = ttype, .file_name = token.value};
     }else  {
         return error.ExpectedRedirect;
@@ -223,6 +237,10 @@ const TokenType = enum {
     RedirOut,
     RedirOutApp,
     RedirIn,
+    RedirOutErr,
+    RedirOutErrApp,
+    RedirErr,
+    RedirErrApp,
     Semi,
     Background,
     End,
@@ -276,6 +294,18 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 index += 1;
             },
             '&' => {
+                if (index + 2 < input.len and input[index + 1] == '>' and input[index + 2] == '>') {
+                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErrApp, .value = "&>>"});
+                    index += 3;
+                    continue;
+                }
+
+                if (index + 1 < input.len and input[index+1] == '>') {
+                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErr, .value = "&>"});
+                    index += 2;
+                    continue;
+                }
+
                 try tokens.append(allocator, Token{.type = TokenType.Background, .value = "&"});
                 index += 1;
             },
@@ -304,6 +334,25 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 const cstr = try toCstr(allocator, input[start..index]);
                 try tokens.append(allocator, .{ .type = .WordLiteral, .value = cstr });
                 index += 1;
+            },
+            '2' => {
+                if (index + 2 < input.len and input[index + 1] == '>' and input[index + 2] == '>') {
+                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErrApp, .value = "2>>"});
+                    index += 3;
+                    continue;
+                }
+
+                if (index + 1 < input.len and input[index+1] == '>') {
+                    try tokens.append(allocator, Token{.type = TokenType.RedirOutErr, .value = "2>"});
+                    index += 2;
+                    continue;
+                }
+
+                const start = index;
+                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
+
+                const cstr = try toCstr(allocator, input[start..index]);
+                try tokens.append(allocator, .{ .type = .Word, .value = cstr });
             },
 
             else => {
