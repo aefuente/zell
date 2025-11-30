@@ -41,6 +41,13 @@ const Environment = struct {
         self.vars.deinit(allocator);
     }
 
+    pub fn LoadEnvironment(self: *Environment, allocator: Allocator) void {
+        // Load the /etc/environment
+        
+        // Load the .zellrc
+
+    }
+
 };
 
 const VariableFlags = struct {

@@ -25,7 +25,8 @@ pub fn parse(allocator: Allocator, input: []const u8) !*AST {
 // GRAMMER:
 // List -> pipline ( Semi Pipeline )*
 // pipeline -> command (Pipe command)*
-// command -> word (word | redirect)*
+// command → (Assignment | redirect)* word? (word | redirect)*
+// Assignment -> AssignmentKeyword? word=word
 // redirect -> RedirIn word
 //             RedirOut word
 //             RedirOutApp word
@@ -54,6 +55,19 @@ const Command = struct {
         cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 10);
         return cm;
     }
+};
+
+const AssignmentType = enum {
+    Alias,
+    Export,
+    Local,
+};
+
+const Assignment = struct {
+    assignment_type: AssignmentType,
+    key: [:0]const u8,
+    value: [:0]const u8,
+
 };
 
 pub const Pipeline = struct {
@@ -159,6 +173,56 @@ fn is_word(token_type: TokenType) bool {
     return token_type == TokenType.WordLiteral or token_type == TokenType.Word;
 }
 
+fn parse_assignment(tokens: *ParserState) !Assignment {
+
+    const token = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    const token_span = std.mem.span(token.value);
+    var assignment: Assignment = undefined;
+
+    if (std.mem.eql(u8, token_span, "export")) {
+        assignment.assignment_type = AssignmentType.Export;
+        tokens.next();
+    }else if (std.mem.eql(u8, token_span, "alias")) {
+        assignment.assignment_type = AssignmentType.Alias;
+        tokens.next();
+    }else {
+        if (! is_word(token.type)) {
+            return error.ExpectedAssignmentKey;
+        }
+        assignment.assignment_type = AssignmentType.Local;
+    }
+
+    const key = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    assignment.key = key.value;
+
+    tokens.next();
+
+    const eql = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    if (eql.type != TokenType.Assignment) {
+        return error.ExpectedAssignment;
+    }
+
+    tokens.next();
+
+    const value = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    assignment.key = value.value;
+
+    return assignment;
+
+}
+ 
 fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
 
     const token = tokens.get() catch {
@@ -231,6 +295,8 @@ fn parse_list(allocator: Allocator, tokens: []Token) !*AST {
 
 
 const TokenType = enum {
+    Export,
+    Assignment,
     Word,
     WordLiteral,
     Pipe,
@@ -348,25 +414,43 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                     continue;
                 }
 
+
                 const start = index;
-                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
+                index = span_word(input, index);
 
                 const cstr = try toCstr(allocator, input[start..index]);
                 try tokens.append(allocator, .{ .type = .Word, .value = cstr });
             },
+            '=' => {
+                try tokens.append(allocator, .{.type = .Assignment, .value = "="});
+            },
 
             else => {
                 const start = index;
-                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
+                index = span_word(input, index);
+
+                const word = input[start..index];
+                var tokenType: TokenType = undefined;
+
+                if (std.mem.eql(u8, word, "export")) {
+                    tokenType = TokenType.Export;
+                }else {
+                    tokenType = TokenType.Word;
+                }
 
                 const cstr = try toCstr(allocator, input[start..index]);
-                try tokens.append(allocator, .{ .type = .Word, .value = cstr });
+                try tokens.append(allocator, .{ .type = tokenType, .value = cstr });
             },
         }
     }
 
     try tokens.append(allocator, .{.type = .End, .value = "\n"});
     return try tokens.toOwnedSlice(allocator);
+}
+
+fn span_word(input: []const u8, index: usize) usize{
+    while (index < input.len and ! in(input[index], " \t\n|><&=") and input[index] != 0) : (index += 1) {}
+    return index;
 }
 
 
