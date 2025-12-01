@@ -21,15 +21,6 @@ pub fn parse(allocator: Allocator, input: []const u8) !*AST {
     return ast;
 }
 
-// AST
-// GRAMMER:
-// List -> pipline ( Semi Pipeline )*
-// pipeline -> command (Pipe command)*
-// command → (Assignment | redirect)* word? (word | redirect)*
-// Assignment -> AssignmentKeyword? word=word
-// redirect -> RedirIn word
-//             RedirOut word
-//             RedirOutApp word
 pub const RedirectType = enum {
     RedirOut,
     RedirOutApp,
@@ -48,11 +39,13 @@ const Redirect = struct {
 const Command = struct {
     argv: std.ArrayList(?[*:0]const u8),
     redirects: std.ArrayList(Redirect),
+    assignment: std.ArrayList(Assignment),
 
     pub fn init(allocator: Allocator) !*Command {
         const cm = try allocator.create(Command);
         cm.argv = try std.ArrayList(?[*:0]const u8).initCapacity(allocator, 10);
-        cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 10);
+        cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 3);
+        cm.assignment = try std.ArrayList(Assignment).initCapacity(allocator, 2);
         return cm;
     }
 };
@@ -80,6 +73,16 @@ pub const Pipeline = struct {
     }
 };
 
+
+// AST
+// GRAMMER:
+// List -> pipline ( Semi Pipeline )*
+// pipeline -> command (Pipe command)*
+// command → (Assignment | redirect)* word? (word | redirect)*
+// Assignment -> AssignmentKeyword? word=word
+// redirect -> RedirIn word
+//             RedirOut word
+//             RedirOutApp word
 pub const AST = struct {
     pipelines: std.ArrayList(*Pipeline),
 
@@ -179,8 +182,11 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
         return error.ExpectedAssignment;
     };
 
-    const token_span = std.mem.span(token.value);
+    const token_span = token.value[0..token.value.len-1];
     var assignment: Assignment = undefined;
+    const start = tokens.pos;
+    errdefer tokens.pos = start;
+
 
     if (std.mem.eql(u8, token_span, "export")) {
         assignment.assignment_type = AssignmentType.Export;
@@ -190,7 +196,7 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
         tokens.next();
     }else {
         if (! is_word(token.type)) {
-            return error.ExpectedAssignmentKey;
+            return error.ExpectedAssignment;
         }
         assignment.assignment_type = AssignmentType.Local;
     }
@@ -198,6 +204,10 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
     const key = tokens.get() catch {
         return error.ExpectedAssignment;
     };
+
+    if (! is_word(key.type)) {
+        return error.ExpectedAssignment;
+    }
 
     assignment.key = key.value;
 
@@ -217,23 +227,33 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
         return error.ExpectedAssignment;
     };
 
-    assignment.key = value.value;
+    if (! is_word(value.type)) {
+        return error.ExpectedAssignment;
+    }
+
+    assignment.value = value.value;
 
     return assignment;
 
 }
  
+// command → (Assignment | redirect)* word? (word | redirect)*
 fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
+
+    var cm = try Command.init(allocator);
+
+    if (parse_assignment(tokens)) |assignment| {
+        try cm.assignment.append(allocator, assignment);
+        tokens.next();
+    }else |_| { }
 
     const token = tokens.get() catch {
         return error.ExpectedCommand;
     };
 
     if (! is_word(token.type)) {
-        return error.ExpectedCommand;
+        return cm;
     }
-
-    var cm = try Command.init(allocator);
 
     if (token.type == TokenType.Word and needs_expanding(token.value)) {
         const expanded = try expand_command(allocator, token.value);
@@ -296,6 +316,7 @@ fn parse_list(allocator: Allocator, tokens: []Token) !*AST {
 
 const TokenType = enum {
     Export,
+    Alias,
     Assignment,
     Word,
     WordLiteral,
@@ -423,6 +444,7 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
             },
             '=' => {
                 try tokens.append(allocator, .{.type = .Assignment, .value = "="});
+                index +=1;
             },
 
             else => {
@@ -434,7 +456,9 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
 
                 if (std.mem.eql(u8, word, "export")) {
                     tokenType = TokenType.Export;
-                }else {
+                }else if (std.mem.eql(u8, word, "alias")) {
+                    tokenType = TokenType.Alias;
+                } else {
                     tokenType = TokenType.Word;
                 }
 
@@ -449,8 +473,9 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
 }
 
 fn span_word(input: []const u8, index: usize) usize{
-    while (index < input.len and ! in(input[index], " \t\n|><&=") and input[index] != 0) : (index += 1) {}
-    return index;
+    var idx = index;
+    while (idx < input.len and ! in(input[idx], " \t\n|><&=") and input[idx] != 0) : (idx += 1) {}
+    return idx;
 }
 
 
@@ -529,10 +554,10 @@ fn print_redirects(rd: Redirect, level: i32) void {
     print_level(level);
     var op: []const u8 = undefined;
 
-    if (rd.redir_type == RedirectType.In){
+    if (rd.redir_type == RedirectType.RedirIn){
         op = "<";
     }
-    else if (rd.redir_type == RedirectType.Out){
+    else if (rd.redir_type == RedirectType.RedirOut){
         op = ">";
     }
     else {
@@ -543,6 +568,10 @@ fn print_redirects(rd: Redirect, level: i32) void {
 
 }
 
+fn print_assignments(as: Assignment, level: i32) void {
+    print_level(level);
+    std.debug.print("Assignment: Key:{s} Value:{s}:{any}\n", .{as.key, as.value, as.assignment_type});
+}
 
 fn print_command(cm: *Command, level: i32) void {
     print_level(level);
@@ -559,8 +588,11 @@ fn print_command(cm: *Command, level: i32) void {
 
     for (cm.redirects.items) |redir| {
         print_redirects(redir, level + 2);
-
     }
+    for (cm.assignment.items) |as| {
+        print_assignments(as, level + 2);
+    }
+    std.debug.print("\n", .{});
 
 }
 
