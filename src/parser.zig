@@ -1,12 +1,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const environment = @import("environment.zig");
 
-pub fn parse(allocator: Allocator, input: []const u8) !*AST {
+pub fn parse(allocator: Allocator, input: []const u8, env: environment.Environment) !*AST {
     const tokens = try tokenize(allocator, input);
 
     var parser_state = ParserState{
         .tokens = tokens,
         .pos = 0,
+        .env = env,
     };
 
     var ast = try AST.init(allocator);
@@ -103,6 +105,7 @@ pub const AST = struct {
 const ParserState = struct {
     tokens: []const Token,
     pos: usize,
+    env: environment.Environment,
 
     pub fn match(self: *ParserState, token_type: TokenType) bool {
         if (self.pos < self.tokens.len and self.tokens[self.pos].type == token_type) {
@@ -255,9 +258,16 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         return cm;
     }
 
-    if (token.type == TokenType.Word and needs_expanding(token.value)) {
-        const expanded = try expand_command(allocator, token.value);
-        try cm.argv.appendSlice(allocator, expanded);
+    if (token.type == TokenType.Word) {
+        if (needs_expanding(token.value)) {
+            const expanded = try expand_command(allocator, token.value);
+            try cm.argv.appendSlice(allocator, expanded);
+        } else if (is_variable(token.value)){
+            const expanded = try expand_variable(allocator, token.value, tokens.env);
+            try cm.argv.append(allocator, expanded);
+        } else {
+            try cm.argv.append(allocator, token.value);
+        }
     }else {
         try cm.argv.append(allocator, token.value);
     }
@@ -272,7 +282,10 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
             if (t.type == TokenType.Word and needs_expanding(t.value)) {
                 const expanded = try expand_command(allocator, t.value);
                 try cm.argv.appendSlice(allocator, expanded);
-            }else {
+            } else if (is_variable(t.value)){
+                const expanded = try expand_variable(allocator, t.value, tokens.env);
+                try cm.argv.append(allocator, expanded);
+            } else {
                 try cm.argv.append(allocator, t.value);
             }
             tokens.next();
@@ -318,6 +331,7 @@ const TokenType = enum {
     Export,
     Alias,
     Assignment,
+    Variable,
     Word,
     WordLiteral,
     Pipe,
@@ -446,7 +460,6 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                 try tokens.append(allocator, .{.type = .Assignment, .value = "="});
                 index +=1;
             },
-
             else => {
                 const start = index;
                 index = span_word(input, index);
@@ -479,13 +492,46 @@ fn span_word(input: []const u8, index: usize) usize{
 }
 
 
-fn needs_expanding(pattern: []const u8) bool{
+fn includes_char(pattern: []const u8, c: u8) bool {
     for (pattern) |char | {
-        if (char == '*') {
+        if (char == c) {
             return true;
         }
     }
     return false;
+
+}
+
+fn needs_expanding(pattern: []const u8) bool{
+    return includes_char(pattern, '*');
+}
+
+fn is_variable(pattern: []const u8) bool {
+    return includes_char(pattern, '$');
+}
+
+fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8 {
+
+    var expanded = try std.ArrayList(u8).initCapacity(allocator, 10);
+
+    var idx: usize = 0;
+
+    while (idx < word.len) {
+        if (word[idx] == '$') {
+            idx += 1;
+            const start = idx;
+            while (idx < word.len and word[idx] != 0 and ! in(word[idx], " -$\n\t")) { idx +=1; }
+            if (env.get(word[start..idx])) |value | {
+                try expanded.appendSlice(allocator, value);
+            }
+        }else {
+            try expanded.append(allocator, word[idx]);
+        }
+        idx +=1;
+
+    }
+    const slice = try expanded.toOwnedSlice(allocator);
+    return try toCstr(allocator, slice);
 }
 
 fn expand_command(allocator: Allocator, word: [:0]const u8) ![]?[*:0]u8 {

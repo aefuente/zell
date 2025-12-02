@@ -55,7 +55,7 @@ pub fn main() !u8 {
 
         try history.store(gpa, command_buffer.items);
 
-        const ast = try zell.parser.parse(arena_allocator, command_buffer.items);
+        const ast = try zell.parser.parse(arena_allocator, command_buffer.items, environment);
 
         zell.eval.run(gpa, arena_allocator, ast, &environment) catch |err| {
             switch (err) {
