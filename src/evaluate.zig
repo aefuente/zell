@@ -1,35 +1,44 @@
 const std = @import("std");
 const parser = @import("parser.zig");
+const environment = @import("environment.zig");
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 
 const builtIns = [_][]const u8 {"cd", "exit"};
 
-pub fn run(allocator: Allocator, ast: *parser.AST) !void {
+pub fn run(gpa: Allocator, arena: Allocator, ast: *parser.AST, env: *environment.Environment) !void {
     for (ast.pipelines.items) |pipeline| {
-        try evaluatePipeline(allocator, pipeline);
+        try evaluatePipeline(gpa, arena ,pipeline, env);
     }
 }
 
-fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
+fn evaluatePipeline(gpa: Allocator, arena: Allocator, pipeline: *parser.Pipeline, env: *environment.Environment) !void {
     const n = pipeline.commands.items.len;
 
     if (n == 0) {
         return;
     }
 
-    const command = std.mem.span(pipeline.commands.items[0].argv.items[0].?);
-    if (is_builtin(command)) {
-        try run_builtin(command, @ptrCast(pipeline.commands.items[0].argv.items));
-        return;
-    }
-
     var pipe: [2]posix.fd_t = undefined;
     var prev_read: i32 = -1;
-    var pids = try std.ArrayList(i32).initCapacity(allocator, 3);
-    const env = std.c.environ;
+    var pids = try std.ArrayList(i32).initCapacity(arena, 3);
+    const cenv = std.c.environ;
 
     for (pipeline.commands.items, 0..) | commands, i|{
+
+        for (commands.assignment.items) |assignments| {
+            try env.set(gpa, assignments.key, assignments.value, .{ .exp = true });
+        }
+
+        if (commands.argv.items.len == 0) {
+            continue;
+        }
+        
+        const command = std.mem.span(commands.argv.items[0].?);
+        if (is_builtin(command)) {
+            try run_builtin(command, @ptrCast(commands.argv.items));
+            return;
+        }
 
         const notLast = i < n - 1;
         const notStart = prev_read != -1;
@@ -99,7 +108,7 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
                 posix.close(pipe[1]);
             }
 
-            const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), env);
+            const result = std.posix.execvpeZ(commands.argv.items[0].?, @ptrCast(commands.argv.items), cenv);
             switch (result) {
                 std.posix.ExecveError.FileNotFound => {
                     std.debug.print("zell: {s}: command not found\n", .{commands.argv.items[0].?});
@@ -111,7 +120,7 @@ fn evaluatePipeline(allocator: Allocator, pipeline: *parser.Pipeline) !void {
             std.process.exit(0);
         }
 
-        try pids.append(allocator, fork_pid);
+        try pids.append(arena, fork_pid);
 
 
         if (notStart) {

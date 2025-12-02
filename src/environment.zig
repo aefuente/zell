@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Environment = struct {
+pub const Environment = struct {
     vars: std.ArrayList(*EnvironmentVariable),
 
     pub fn init(allocator: Allocator) !Environment {
@@ -40,14 +40,6 @@ const Environment = struct {
         }
         self.vars.deinit(allocator);
     }
-
-    pub fn LoadEnvironment(self: *Environment, allocator: Allocator) void {
-        // Load the /etc/environment
-        
-        // Load the .zellrc
-
-    }
-
 };
 
 const VariableFlags = struct {
@@ -63,18 +55,9 @@ const EnvironmentVariable = struct {
     flags: VariableFlags,
 
     pub fn init(allocator: Allocator, name: []const u8, value: []const u8, flags: VariableFlags) !*EnvironmentVariable {
-
-        var var_name = try allocator.alloc(u8, name.len);
-        errdefer allocator.free(var_name);
-        @memcpy(var_name[0..], name);
-
-        var var_value = try allocator.alloc(u8, value.len);
-        errdefer allocator.free(var_value);
-        @memcpy(var_value[0..], value);
-
         var env_var = try allocator.create(EnvironmentVariable);
-        env_var.name = var_name;
-        env_var.value = var_value;
+        env_var.name = try allocator.dupe(u8, name[0..name.len-1]);
+        env_var.value = try allocator.dupe(u8, value[0..value.len-1]);
         env_var.flags = flags;
 
         return env_var;
