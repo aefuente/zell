@@ -526,9 +526,8 @@ fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.En
             }
         }else {
             try expanded.append(allocator, word[idx]);
+            idx+=1;
         }
-        idx +=1;
-
     }
     const slice = try expanded.toOwnedSlice(allocator);
     return try toCstr(allocator, slice);
