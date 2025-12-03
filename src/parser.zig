@@ -52,7 +52,7 @@ const Command = struct {
     }
 };
 
-const AssignmentType = enum {
+pub const AssignmentType = enum {
     Alias,
     Export,
     Local,
@@ -258,6 +258,7 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         return cm;
     }
 
+    // TODO: Make better, I think this is a very ineffecient way of doing this
     if (token.type == TokenType.Word) {
         if (needs_expanding(token.value)) {
             const expanded = try expand_command(allocator, token.value);
@@ -266,7 +267,11 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
             const expanded = try expand_variable(allocator, token.value, tokens.env);
             try cm.argv.append(allocator, expanded);
         } else {
-            try cm.argv.append(allocator, token.value);
+            if (try expand_alias(allocator, token.value, tokens.env)) |value| {
+                try cm.argv.append(allocator, value);
+            }else {
+                try cm.argv.append(allocator, token.value);
+            }
         }
     }else {
         try cm.argv.append(allocator, token.value);
@@ -286,7 +291,11 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
                 const expanded = try expand_variable(allocator, t.value, tokens.env);
                 try cm.argv.append(allocator, expanded);
             } else {
-                try cm.argv.append(allocator, t.value);
+                if (try expand_alias(allocator, t.value, tokens.env)) |value| {
+                    try cm.argv.append(allocator, value);
+                }else {
+                    try cm.argv.append(allocator, t.value);
+                }
             }
             tokens.next();
         }
@@ -531,6 +540,19 @@ fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.En
     }
     const slice = try expanded.toOwnedSlice(allocator);
     return try toCstr(allocator, slice);
+}
+
+fn expand_alias(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8{
+    for (env.vars.items) |variables| {
+        if (variables.flags.alias == true) {
+            const norm_word = std.mem.span(word.ptr);
+            if (std.mem.eql(u8, norm_word, variables.name)) {
+                return try allocator.dupeZ(u8, variables.value);
+            }
+
+        }
+    }
+    return null;
 }
 
 fn expand_command(allocator: Allocator, word: [:0]const u8) ![]?[*:0]u8 {

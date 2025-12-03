@@ -19,15 +19,13 @@ pub const Environment = struct {
         return null;
     }
 
-    pub fn set(self: *Environment, allocator: Allocator, name: []const u8, value: []const u8, flags: VariableFlags) !void {
+    pub fn set(self: *Environment, allocator: Allocator, name: [:0]const u8, value: [:0]const u8, flags: VariableFlags) !void {
+        const norm_name = std.mem.span(name.ptr);
         for (self.vars.items, 0..) |variable, idx| {
-            const eql = std.mem.eql(u8, name, variable.name);
-            if (eql and variable.flags.mutable == true) {
+            if (std.mem.eql(u8, norm_name, variable.name)) {
                 variable.deinit(allocator);
                 self.vars.items[idx] = try EnvironmentVariable.init(allocator, name, value, flags);
                 return;
-            } else if (eql and variable.flags.mutable == false) {
-                return error.ImmutableVariable;
             }
         }
         const new_var = try EnvironmentVariable.init(allocator, name, value, flags);
@@ -55,9 +53,8 @@ pub const Environment = struct {
 };
 
 const VariableFlags = struct {
-    mutable: bool = false,
-    // Use for exporting environment variables
     exp: bool = false,
+    alias: bool = false,
 };
 
 // What does a variable look like?
@@ -66,7 +63,7 @@ const EnvironmentVariable = struct {
     value: []const u8,
     flags: VariableFlags,
 
-    pub fn init(allocator: Allocator, name: []const u8, value: []const u8, flags: VariableFlags) !*EnvironmentVariable {
+    pub fn init(allocator: Allocator, name: [:0]const u8, value: [:0]const u8, flags: VariableFlags) !*EnvironmentVariable {
         var env_var = try allocator.create(EnvironmentVariable);
         env_var.name = try allocator.dupe(u8, name[0..name.len-1]);
         env_var.value = try allocator.dupe(u8, value[0..value.len-1]);

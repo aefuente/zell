@@ -26,7 +26,14 @@ fn evaluatePipeline(gpa: Allocator, arena: Allocator, pipeline: *parser.Pipeline
     for (pipeline.commands.items, 0..) | commands, i|{
 
         for (commands.assignment.items) |assignments| {
-            try env.set(gpa, assignments.key, assignments.value, .{ .exp = true });
+            if (assignments.assignment_type == parser.AssignmentType.Alias) {
+                try env.set(gpa, assignments.key, assignments.value, .{ .alias = true });
+            }else if (assignments.assignment_type == parser.AssignmentType.Export) {
+                try env.set(gpa, assignments.key, assignments.value, .{ .exp = true });
+
+            }else {
+                try env.set(gpa, assignments.key, assignments.value, .{});
+            }
         }
         const cenv = try env.get_env(arena);
 
