@@ -34,6 +34,18 @@ pub const Environment = struct {
         try self.vars.append(allocator, new_var);
     }
 
+
+    pub fn get_env(self: *Environment, allocator: Allocator) ![*:null]?[*:0]u8{
+        var result = try std.ArrayList(?[*:0]const u8).initCapacity(allocator, 5);
+        for (self.vars.items) |env_var | {
+            if (env_var.flags.exp == true) {
+                const pair = try std.fmt.allocPrintSentinel(allocator, "{s}={s}", .{env_var.name, env_var.value}, 0);
+                try result.append(allocator, pair);
+            }
+        }
+        return @ptrCast(try result.toOwnedSliceSentinel(allocator, null));
+    }
+
     pub fn deinit(self: *Environment, allocator: Allocator) void {
         for (self.vars.items) |v| {
             v.deinit(allocator);

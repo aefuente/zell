@@ -22,13 +22,13 @@ fn evaluatePipeline(gpa: Allocator, arena: Allocator, pipeline: *parser.Pipeline
     var pipe: [2]posix.fd_t = undefined;
     var prev_read: i32 = -1;
     var pids = try std.ArrayList(i32).initCapacity(arena, 3);
-    const cenv = std.c.environ;
 
     for (pipeline.commands.items, 0..) | commands, i|{
 
         for (commands.assignment.items) |assignments| {
             try env.set(gpa, assignments.key, assignments.value, .{ .exp = true });
         }
+        const cenv = try env.get_env(arena);
 
         if (commands.argv.items.len == 0) {
             continue;
