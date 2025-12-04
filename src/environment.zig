@@ -1,6 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+fn toCstr(allocator: Allocator, str: []const u8) ![]u8 {
+    var c_str = try allocator.alloc(u8, str.len+1);
+    @memcpy(c_str[0..str.len], str);
+    c_str[str.len] = 0;
+    return c_str;
+}
+
 pub const Environment = struct {
     vars: std.ArrayList(*EnvironmentVariable),
 
@@ -33,23 +40,27 @@ pub const Environment = struct {
     }
 
     pub fn loadDefaults(self: *Environment, allocator: Allocator) !void {
+
         var user = try getPasswd(allocator);
         defer user.deinit(allocator);
 
-        const home = "HOME";
-        var c_home: []u8 = try allocator.alloc(u8, home.len+1);
-        defer allocator.free(c_home);
-        @memcpy(c_home[0..home.len], home);
-        c_home[home.len]  = 0;
-
-
-        var c_dir: []u8 = try allocator.alloc(u8, user.home.len+1);
+        const home = [_]u8{'H', 'O', 'M', 'E', 0};
+        const c_dir = try toCstr(allocator, user.home);
         defer allocator.free(c_dir);
-        @memcpy(c_dir[0..user.home.len], user.home);
-        c_dir[user.home.len]  = 0;
-        std.debug.print("c_dir: {s}\n", .{c_dir});
 
-        try self.set(allocator, @ptrCast(c_home), @ptrCast(c_dir), .{ .exp = true });
+        try self.set(allocator, @ptrCast(&home), @ptrCast(c_dir), .{ .exp = true });
+
+        const user_key = [_]u8{'U', 'S', 'E', 'R', 0};
+        const c_user = try toCstr(allocator, user.username);
+        defer allocator.free(c_user);
+
+        try self.set(allocator, @ptrCast(&user_key), @ptrCast(c_user), .{ .exp = true });
+
+        const path_key = [_]u8{'P', 'A', 'T', 'H', 0};
+        const c_path = try toCstr(allocator, "/usr/local/bin:/usr/bin");
+        defer allocator.free(c_path);
+        try self.set(allocator, @ptrCast(&path_key), @ptrCast(c_path), .{ .exp = true });
+
     }
 
     pub fn get_env(self: *Environment, allocator: Allocator) ![*:null]?[*:0]u8{
