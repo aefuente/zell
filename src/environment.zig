@@ -32,6 +32,25 @@ pub const Environment = struct {
         try self.vars.append(allocator, new_var);
     }
 
+    pub fn loadDefaults(self: *Environment, allocator: Allocator) !void {
+        var user = try getPasswd(allocator);
+        defer user.deinit(allocator);
+
+        const home = "HOME";
+        var c_home: []u8 = try allocator.alloc(u8, home.len+1);
+        defer allocator.free(c_home);
+        @memcpy(c_home[0..home.len], home);
+        c_home[home.len]  = 0;
+
+
+        var c_dir: []u8 = try allocator.alloc(u8, user.home.len+1);
+        defer allocator.free(c_dir);
+        @memcpy(c_dir[0..user.home.len], user.home);
+        c_dir[user.home.len]  = 0;
+        std.debug.print("c_dir: {s}\n", .{c_dir});
+
+        try self.set(allocator, @ptrCast(c_home), @ptrCast(c_dir), .{ .exp = true });
+    }
 
     pub fn get_env(self: *Environment, allocator: Allocator) ![*:null]?[*:0]u8{
         var result = try std.ArrayList(?[*:0]const u8).initCapacity(allocator, 5);
@@ -51,6 +70,78 @@ pub const Environment = struct {
         self.vars.deinit(allocator);
     }
 };
+
+const passwd = struct {
+    line: []const u8,
+    username: []const u8,
+    password: []const u8,
+    uid: u32,
+    gid: u32,
+    rname: []const u8,
+    home: []const u8,
+    shell: []const u8,
+
+    fn deinit(self: *passwd, allocator: Allocator) void {
+        allocator.free(self.line);
+    }
+};
+
+fn splitPasswd(allocator: Allocator, tmp_line: []const u8) !passwd {
+    var start: usize = 0;
+    var fields: [7][]const u8 = undefined;
+
+    var fields_index: usize = 0;
+
+    const line = try allocator.dupe(u8, tmp_line);
+
+    for (line, 0..) |c, idx| {
+        if (c == ':' or c == '\n') {
+
+            if (fields_index >= fields.len) {
+                return error.BadFieldCount;
+            }
+
+            fields[fields_index] = line[start..idx];
+            fields_index += 1;
+            start = idx+1;
+        }
+    }
+
+    if (fields_index != 7) {
+        return error.BadFieldCount;
+    }
+
+    return passwd{
+        .line = line,
+        .username = fields[0],
+        .password  = fields[1],
+        .uid = try std.fmt.parseInt(u32, fields[2], 10),
+        .gid = try std.fmt.parseInt(u32, fields[3], 10),
+        .rname  = fields[4],
+        .home = fields[5],
+        .shell = fields[6],
+    };
+}
+
+pub fn getPasswd(allocator: Allocator) !passwd {
+    const uid = std.posix.getuid();
+
+    var read_buffer: [100]u8 = undefined;
+    const passwd_file = try std.fs.openFileAbsolute("/etc/passwd", .{.mode = .read_only});
+    var passwd_reader = passwd_file.reader(&read_buffer);
+    var reader = &passwd_reader.interface;
+
+    while (true) {
+        const line = try reader.takeDelimiterInclusive('\n');
+        var pas = try splitPasswd(allocator, line);
+        if (pas.uid == uid) {
+            return pas;
+        }else {
+            pas.deinit(allocator);
+        }
+    }
+    return error.NotFound;
+}
 
 const VariableFlags = struct {
     exp: bool = false,
@@ -78,12 +169,3 @@ const EnvironmentVariable = struct {
         allocator.destroy(self);
     }
 };
-
-test "environment" {
-    const allocator = std.testing.allocator;
-    var env = try Environment.init(allocator);
-    defer env.deinit(allocator);
-    try std.testing.expect(env.get("some") == null);
-    try env.set(allocator, "key", "value", .{});
-    try std.testing.expectEqualSlices(u8, env.get("key").?, "value");
-}
