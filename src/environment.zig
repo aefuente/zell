@@ -57,10 +57,11 @@ pub const Environment = struct {
         try self.set(allocator, @ptrCast(&user_key), @ptrCast(c_user), .{ .exp = true });
 
         const path_key = [_]u8{'P', 'A', 'T', 'H', 0};
-        const c_path = try toCstr(allocator, "/usr/local/bin:/usr/bin");
-        defer allocator.free(c_path);
-        try self.set(allocator, @ptrCast(&path_key), @ptrCast(c_path), .{ .exp = true });
+        var c_path: [24]u8 = undefined;
+        @memcpy(c_path[0..23],"/usr/local/bin:/usr/bin");
+        c_path[23] = 0;
 
+        try self.set(allocator, @ptrCast(&path_key), @ptrCast(&c_path), .{ .exp = true });
     }
 
     pub fn get_env(self: *Environment, allocator: Allocator) ![*:null]?[*:0]u8{
