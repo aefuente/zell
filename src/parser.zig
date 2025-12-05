@@ -179,7 +179,7 @@ fn is_word(token_type: TokenType) bool {
     return token_type == TokenType.WordLiteral or token_type == TokenType.Word;
 }
 
-fn parse_assignment(tokens: *ParserState) !Assignment {
+fn parse_assignment(allocator: Allocator, tokens: *ParserState) !Assignment {
 
     const token = tokens.get() catch {
         return error.ExpectedAssignment;
@@ -234,7 +234,10 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
         return error.ExpectedAssignment;
     }
 
-    assignment.value = value.value;
+    const expanded = try expand(allocator, tokens);
+    var idx: usize= 0;
+    while (expanded[0].?[idx] != 0) { idx += 1; }
+    assignment.value = @ptrCast(expanded[0].?[0..idx+1]);
 
     return assignment;
 
@@ -243,36 +246,41 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
 // TODO: Make better, I think this is a very ineffecient way of doing this.
 // We loop over the same word so many times its a bit silly. Maybe one big
 // master expand so we can limit to one or two iterations
-fn expand(allocator: Allocator, tokens: *ParserState, cm: *Command) !void {
+fn expand(allocator: Allocator, tokens: *ParserState) ![]?[*:0]u8 {
     const token = try tokens.get();
+
+    var result = try std.ArrayList(?[*:0]u8).initCapacity(allocator, 1);
 
     if (token.type == TokenType.Word) {
         if (needs_expanding(token.value)) {
-            try cm.argv.appendSlice(allocator, try expand_command(allocator, token.value));
-            return;
+            try result.appendSlice(allocator, try expand_command(allocator, token.value));
+            return result.toOwnedSlice(allocator);
         }
 
         if (is_variable(token.value)){
             const expanded = try expand_variable(allocator, token.value, tokens.env);
-            try cm.argv.append(allocator, expanded);
-            return;
+            try result.append(allocator, expanded);
+            return result.toOwnedSlice(allocator);
         }
 
         if (try expand_alias(allocator, token.value, tokens.env)) |value| {
-            try cm.argv.append(allocator, value);
-            return;
+            try result.append(allocator, value);
+            return result.toOwnedSlice(allocator);
         }
 
         if (try expand_tilde(allocator, token.value, tokens.env)) |value| {
-            try cm.argv.append(allocator, value);
-            return;
+            try result.append(allocator, value);
+            return result.toOwnedSlice(allocator);
         }
 
-
-        try cm.argv.append(allocator, token.value);
+        var duped = try allocator.dupe(u8, token.value);
+        try result.append(allocator, @ptrCast(&duped));
+        return result.toOwnedSlice(allocator);
 
     }else {
-        try cm.argv.append(allocator, token.value);
+        var duped = try allocator.dupe(u8, token.value);
+        try result.append(allocator, @ptrCast(&duped));
+        return result.toOwnedSlice(allocator);
     }
 }
  
@@ -281,7 +289,7 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
 
     var cm = try Command.init(allocator);
 
-    if (parse_assignment(tokens)) |assignment| {
+    if (parse_assignment(allocator, tokens)) |assignment| {
         try cm.assignment.append(allocator, assignment);
         tokens.next();
     }else |_| { }
@@ -295,7 +303,8 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
     }
 
 
-    try expand(allocator, tokens , cm);
+    const expanded = try expand(allocator, tokens);
+    try cm.argv.appendSlice(allocator, expanded);
 
     tokens.next();
 
@@ -303,7 +312,8 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         if (tokens.is_redirect()) {
             try cm.redirects.append(allocator, try parse_redirect(tokens));
         }else {
-            try expand(allocator, tokens, cm);
+            const exp = try expand(allocator, tokens);
+            try cm.argv.appendSlice(allocator, exp);
             tokens.next();
         }
     }
@@ -536,7 +546,7 @@ fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.En
         if (word[idx] == '$') {
             idx += 1;
             const start = idx;
-            while (idx < word.len and word[idx] != 0 and ! in(word[idx], " -$\n\t")) { idx +=1; }
+            while (idx < word.len and word[idx] != 0 and ! in(word[idx], " -$\n\t/:")) { idx +=1; }
             if (env.get(word[start..idx])) |value | {
                 try expanded.appendSlice(allocator, value);
             }
@@ -777,10 +787,6 @@ test "test Tokenizer" {
     });
 
 }
-
-
-
-
 
 fn match_glob(pattern: []const u8, name: []const u8) bool{
 
