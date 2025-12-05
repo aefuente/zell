@@ -239,6 +239,42 @@ fn parse_assignment(tokens: *ParserState) !Assignment {
     return assignment;
 
 }
+
+// TODO: Make better, I think this is a very ineffecient way of doing this.
+// We loop over the same word so many times its a bit silly. Maybe one big
+// master expand so we can limit to one or two iterations
+fn expand(allocator: Allocator, tokens: *ParserState, cm: *Command) !void {
+    const token = try tokens.get();
+
+    if (token.type == TokenType.Word) {
+        if (needs_expanding(token.value)) {
+            try cm.argv.appendSlice(allocator, try expand_command(allocator, token.value));
+            return;
+        }
+
+        if (is_variable(token.value)){
+            const expanded = try expand_variable(allocator, token.value, tokens.env);
+            try cm.argv.append(allocator, expanded);
+            return;
+        }
+
+        if (try expand_alias(allocator, token.value, tokens.env)) |value| {
+            try cm.argv.append(allocator, value);
+            return;
+        }
+
+        if (try expand_tilde(allocator, token.value, tokens.env)) |value| {
+            try cm.argv.append(allocator, value);
+            return;
+        }
+
+
+        try cm.argv.append(allocator, token.value);
+
+    }else {
+        try cm.argv.append(allocator, token.value);
+    }
+}
  
 // command → (Assignment | redirect)* word? (word | redirect)*
 fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
@@ -258,24 +294,8 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         return cm;
     }
 
-    // TODO: Make better, I think this is a very ineffecient way of doing this
-    if (token.type == TokenType.Word) {
-        if (needs_expanding(token.value)) {
-            const expanded = try expand_command(allocator, token.value);
-            try cm.argv.appendSlice(allocator, expanded);
-        } else if (is_variable(token.value)){
-            const expanded = try expand_variable(allocator, token.value, tokens.env);
-            try cm.argv.append(allocator, expanded);
-        } else {
-            if (try expand_alias(allocator, token.value, tokens.env)) |value| {
-                try cm.argv.append(allocator, value);
-            }else {
-                try cm.argv.append(allocator, token.value);
-            }
-        }
-    }else {
-        try cm.argv.append(allocator, token.value);
-    }
+
+    try expand(allocator, tokens , cm);
 
     tokens.next();
 
@@ -283,20 +303,7 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         if (tokens.is_redirect()) {
             try cm.redirects.append(allocator, try parse_redirect(tokens));
         }else {
-            const t = try tokens.get();
-            if (t.type == TokenType.Word and needs_expanding(t.value)) {
-                const expanded = try expand_command(allocator, t.value);
-                try cm.argv.appendSlice(allocator, expanded);
-            } else if (is_variable(t.value)){
-                const expanded = try expand_variable(allocator, t.value, tokens.env);
-                try cm.argv.append(allocator, expanded);
-            } else {
-                if (try expand_alias(allocator, t.value, tokens.env)) |value| {
-                    try cm.argv.append(allocator, value);
-                }else {
-                    try cm.argv.append(allocator, t.value);
-                }
-            }
+            try expand(allocator, tokens, cm);
             tokens.next();
         }
     }
@@ -539,6 +546,22 @@ fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.En
         }
     }
     const slice = try expanded.toOwnedSlice(allocator);
+    return try toCstr(allocator, slice);
+}
+
+fn expand_tilde(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8 {
+    var expanded = try std.ArrayList(u8).initCapacity(allocator, 10);
+
+    for (word) |value | {
+        if (value == '~') {
+            const home = env.get("HOME") orelse "";
+            try expanded.appendSlice(allocator, home);
+        }else {
+            try expanded.append(allocator, value);
+        }
+    }
+    const slice = try expanded.toOwnedSlice(allocator);
+
     return try toCstr(allocator, slice);
 }
 
