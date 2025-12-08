@@ -1,12 +1,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const environment = @import("environment.zig");
 
-pub fn parse(allocator: Allocator, input: []const u8) !*AST {
+pub fn parse(allocator: Allocator, input: []const u8, env: environment.Environment) !*AST {
     const tokens = try tokenize(allocator, input);
 
     var parser_state = ParserState{
         .tokens = tokens,
         .pos = 0,
+        .env = env,
     };
 
     var ast = try AST.init(allocator);
@@ -21,14 +23,6 @@ pub fn parse(allocator: Allocator, input: []const u8) !*AST {
     return ast;
 }
 
-// AST
-// GRAMMER:
-// List -> pipline ( Semi Pipeline )*
-// pipeline -> command (Pipe command)*
-// command -> word (word | redirect)*
-// redirect -> RedirIn word
-//             RedirOut word
-//             RedirOutApp word
 pub const RedirectType = enum {
     RedirOut,
     RedirOutApp,
@@ -47,13 +41,28 @@ const Redirect = struct {
 const Command = struct {
     argv: std.ArrayList(?[*:0]const u8),
     redirects: std.ArrayList(Redirect),
+    assignment: std.ArrayList(Assignment),
 
     pub fn init(allocator: Allocator) !*Command {
         const cm = try allocator.create(Command);
         cm.argv = try std.ArrayList(?[*:0]const u8).initCapacity(allocator, 10);
-        cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 10);
+        cm.redirects = try std.ArrayList(Redirect).initCapacity(allocator, 3);
+        cm.assignment = try std.ArrayList(Assignment).initCapacity(allocator, 2);
         return cm;
     }
+};
+
+pub const AssignmentType = enum {
+    Alias,
+    Export,
+    Local,
+};
+
+const Assignment = struct {
+    assignment_type: AssignmentType,
+    key: [:0]const u8,
+    value: [:0]const u8,
+
 };
 
 pub const Pipeline = struct {
@@ -66,6 +75,16 @@ pub const Pipeline = struct {
     }
 };
 
+
+// AST
+// GRAMMER:
+// List -> pipline ( Semi Pipeline )*
+// pipeline -> command (Pipe command)*
+// command → (Assignment | redirect)* word? (word | redirect)*
+// Assignment -> AssignmentKeyword? word=word
+// redirect -> RedirIn word
+//             RedirOut word
+//             RedirOutApp word
 pub const AST = struct {
     pipelines: std.ArrayList(*Pipeline),
 
@@ -86,6 +105,7 @@ pub const AST = struct {
 const ParserState = struct {
     tokens: []const Token,
     pos: usize,
+    env: environment.Environment,
 
     pub fn match(self: *ParserState, token_type: TokenType) bool {
         if (self.pos < self.tokens.len and self.tokens[self.pos].type == token_type) {
@@ -159,24 +179,132 @@ fn is_word(token_type: TokenType) bool {
     return token_type == TokenType.WordLiteral or token_type == TokenType.Word;
 }
 
+fn parse_assignment(allocator: Allocator, tokens: *ParserState) !Assignment {
+
+    const token = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    const token_span = token.value[0..token.value.len-1];
+    var assignment: Assignment = undefined;
+    const start = tokens.pos;
+    errdefer tokens.pos = start;
+
+
+    if (std.mem.eql(u8, token_span, "export")) {
+        assignment.assignment_type = AssignmentType.Export;
+        tokens.next();
+    }else if (std.mem.eql(u8, token_span, "alias")) {
+        assignment.assignment_type = AssignmentType.Alias;
+        tokens.next();
+    }else {
+        if (! is_word(token.type)) {
+            return error.ExpectedAssignment;
+        }
+        assignment.assignment_type = AssignmentType.Local;
+    }
+
+    const key = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    if (! is_word(key.type)) {
+        return error.ExpectedAssignment;
+    }
+
+    assignment.key = key.value;
+
+    tokens.next();
+
+    const eql = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    if (eql.type != TokenType.Assignment) {
+        return error.ExpectedAssignment;
+    }
+
+    tokens.next();
+
+    const value = tokens.get() catch {
+        return error.ExpectedAssignment;
+    };
+
+    if (! is_word(value.type)) {
+        return error.ExpectedAssignment;
+    }
+
+    const expanded = try expand(allocator, tokens);
+    var idx: usize= 0;
+    while (expanded[0].?[idx] != 0) { idx += 1; }
+    assignment.value = @ptrCast(expanded[0].?[0..idx+1]);
+
+    return assignment;
+
+}
+
+// TODO: Make better, I think this is a very ineffecient way of doing this.
+// We loop over the same word so many times its a bit silly. Maybe one big
+// master expand so we can limit to one or two iterations
+fn expand(allocator: Allocator, tokens: *ParserState) ![]?[*:0]u8 {
+    const token = try tokens.get();
+
+    var result = try std.ArrayList(?[*:0]u8).initCapacity(allocator, 1);
+
+    if (token.type == TokenType.Word) {
+        if (needs_expanding(token.value)) {
+            try result.appendSlice(allocator, try expand_command(allocator, token.value));
+            return result.toOwnedSlice(allocator);
+        }
+
+        if (is_variable(token.value)){
+            const expanded = try expand_variable(allocator, token.value, tokens.env);
+            try result.append(allocator, expanded);
+            return result.toOwnedSlice(allocator);
+        }
+
+        if (try expand_alias(allocator, token.value, tokens.env)) |value| {
+            try result.append(allocator, value);
+            return result.toOwnedSlice(allocator);
+        }
+
+        if (try expand_tilde(allocator, token.value, tokens.env)) |value| {
+            try result.append(allocator, value);
+            return result.toOwnedSlice(allocator);
+        }
+
+        var duped = try allocator.dupe(u8, token.value);
+        try result.append(allocator, @ptrCast(&duped));
+        return result.toOwnedSlice(allocator);
+
+    }else {
+        var duped = try allocator.dupe(u8, token.value);
+        try result.append(allocator, @ptrCast(&duped));
+        return result.toOwnedSlice(allocator);
+    }
+}
+ 
+// command → (Assignment | redirect)* word? (word | redirect)*
 fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
+
+    var cm = try Command.init(allocator);
+
+    if (parse_assignment(allocator, tokens)) |assignment| {
+        try cm.assignment.append(allocator, assignment);
+        tokens.next();
+    }else |_| { }
 
     const token = tokens.get() catch {
         return error.ExpectedCommand;
     };
 
     if (! is_word(token.type)) {
-        return error.ExpectedCommand;
+        return cm;
     }
 
-    var cm = try Command.init(allocator);
 
-    if (token.type == TokenType.Word and needs_expanding(token.value)) {
-        const expanded = try expand_command(allocator, token.value);
-        try cm.argv.appendSlice(allocator, expanded);
-    }else {
-        try cm.argv.append(allocator, token.value);
-    }
+    const expanded = try expand(allocator, tokens);
+    try cm.argv.appendSlice(allocator, expanded);
 
     tokens.next();
 
@@ -184,13 +312,8 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         if (tokens.is_redirect()) {
             try cm.redirects.append(allocator, try parse_redirect(tokens));
         }else {
-            const t = try tokens.get();
-            if (t.type == TokenType.Word and needs_expanding(t.value)) {
-                const expanded = try expand_command(allocator, t.value);
-                try cm.argv.appendSlice(allocator, expanded);
-            }else {
-                try cm.argv.append(allocator, t.value);
-            }
+            const exp = try expand(allocator, tokens);
+            try cm.argv.appendSlice(allocator, exp);
             tokens.next();
         }
     }
@@ -231,6 +354,10 @@ fn parse_list(allocator: Allocator, tokens: []Token) !*AST {
 
 
 const TokenType = enum {
+    Export,
+    Alias,
+    Assignment,
+    Variable,
     Word,
     WordLiteral,
     Pipe,
@@ -348,19 +475,34 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
                     continue;
                 }
 
+
                 const start = index;
-                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
+                index = span_word(input, index);
 
                 const cstr = try toCstr(allocator, input[start..index]);
                 try tokens.append(allocator, .{ .type = .Word, .value = cstr });
             },
-
+            '=' => {
+                try tokens.append(allocator, .{.type = .Assignment, .value = "="});
+                index +=1;
+            },
             else => {
                 const start = index;
-                while (index < input.len and ! in(input[index], " \t\n|><&") and input[index] != 0) : (index += 1) {}
+                index = span_word(input, index);
+
+                const word = input[start..index];
+                var tokenType: TokenType = undefined;
+
+                if (std.mem.eql(u8, word, "export")) {
+                    tokenType = TokenType.Export;
+                }else if (std.mem.eql(u8, word, "alias")) {
+                    tokenType = TokenType.Alias;
+                } else {
+                    tokenType = TokenType.Word;
+                }
 
                 const cstr = try toCstr(allocator, input[start..index]);
-                try tokens.append(allocator, .{ .type = .Word, .value = cstr });
+                try tokens.append(allocator, .{ .type = tokenType, .value = cstr });
             },
         }
     }
@@ -369,14 +511,81 @@ fn tokenize(allocator: Allocator, input: []const u8) ![]Token {
     return try tokens.toOwnedSlice(allocator);
 }
 
+fn span_word(input: []const u8, index: usize) usize{
+    var idx = index;
+    while (idx < input.len and ! in(input[idx], " \t\n|><&=") and input[idx] != 0) : (idx += 1) {}
+    return idx;
+}
 
-fn needs_expanding(pattern: []const u8) bool{
+
+fn includes_char(pattern: []const u8, c: u8) bool {
     for (pattern) |char | {
-        if (char == '*') {
+        if (char == c) {
             return true;
         }
     }
     return false;
+
+}
+
+fn needs_expanding(pattern: []const u8) bool{
+    return includes_char(pattern, '*');
+}
+
+fn is_variable(pattern: []const u8) bool {
+    return includes_char(pattern, '$');
+}
+
+fn expand_variable(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8 {
+
+    var expanded = try std.ArrayList(u8).initCapacity(allocator, 10);
+
+    var idx: usize = 0;
+
+    while (idx < word.len) {
+        if (word[idx] == '$') {
+            idx += 1;
+            const start = idx;
+            while (idx < word.len and word[idx] != 0 and ! in(word[idx], " -$\n\t/:")) { idx +=1; }
+            if (env.get(word[start..idx])) |value | {
+                try expanded.appendSlice(allocator, value);
+            }
+        }else {
+            try expanded.append(allocator, word[idx]);
+            idx+=1;
+        }
+    }
+    const slice = try expanded.toOwnedSlice(allocator);
+    return try toCstr(allocator, slice);
+}
+
+fn expand_tilde(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8 {
+    var expanded = try std.ArrayList(u8).initCapacity(allocator, 10);
+
+    for (word) |value | {
+        if (value == '~') {
+            const home = env.get("HOME") orelse "";
+            try expanded.appendSlice(allocator, home);
+        }else {
+            try expanded.append(allocator, value);
+        }
+    }
+    const slice = try expanded.toOwnedSlice(allocator);
+
+    return try toCstr(allocator, slice);
+}
+
+fn expand_alias(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8{
+    for (env.vars.items) |variables| {
+        if (variables.flags.alias == true) {
+            const norm_word = std.mem.span(word.ptr);
+            if (std.mem.eql(u8, norm_word, variables.name)) {
+                return try allocator.dupeZ(u8, variables.value);
+            }
+
+        }
+    }
+    return null;
 }
 
 fn expand_command(allocator: Allocator, word: [:0]const u8) ![]?[*:0]u8 {
@@ -445,10 +654,10 @@ fn print_redirects(rd: Redirect, level: i32) void {
     print_level(level);
     var op: []const u8 = undefined;
 
-    if (rd.redir_type == RedirectType.In){
+    if (rd.redir_type == RedirectType.RedirIn){
         op = "<";
     }
-    else if (rd.redir_type == RedirectType.Out){
+    else if (rd.redir_type == RedirectType.RedirOut){
         op = ">";
     }
     else {
@@ -459,6 +668,10 @@ fn print_redirects(rd: Redirect, level: i32) void {
 
 }
 
+fn print_assignments(as: Assignment, level: i32) void {
+    print_level(level);
+    std.debug.print("Assignment: Key:{s} Value:{s}:{any}\n", .{as.key, as.value, as.assignment_type});
+}
 
 fn print_command(cm: *Command, level: i32) void {
     print_level(level);
@@ -475,8 +688,11 @@ fn print_command(cm: *Command, level: i32) void {
 
     for (cm.redirects.items) |redir| {
         print_redirects(redir, level + 2);
-
     }
+    for (cm.assignment.items) |as| {
+        print_assignments(as, level + 2);
+    }
+    std.debug.print("\n", .{});
 
 }
 
@@ -571,10 +787,6 @@ test "test Tokenizer" {
     });
 
 }
-
-
-
-
 
 fn match_glob(pattern: []const u8, name: []const u8) bool{
 

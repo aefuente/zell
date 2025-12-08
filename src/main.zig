@@ -3,7 +3,6 @@ const zell = @import("zell");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
-
 const COMMAND_BUF_INIT_CAP: usize = 50;
 const ARG_BUF_INIT_CAP: usize = 10;
 
@@ -16,7 +15,7 @@ pub fn main() !u8 {
     defer assert(debug_allocator.deinit() == .ok);
     const gpa = debug_allocator.allocator();
 
-    var arena = std.heap.ArenaAllocator.init(gpa);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_allocator = arena.allocator();
     defer arena.deinit();
 
@@ -37,6 +36,10 @@ pub fn main() !u8 {
     defer history.deinit(gpa);
     defer history.save();
 
+    var environment = try zell.environment.Environment.init(gpa);
+    defer environment.deinit(gpa);
+    try environment.loadDefaults(gpa);
+
     while (true) {
         defer _ = arena.reset(.free_all);
 
@@ -53,9 +56,9 @@ pub fn main() !u8 {
 
         try history.store(gpa, command_buffer.items);
 
-        const ast = try zell.parser.parse(arena_allocator, command_buffer.items);
+        const ast = try zell.parser.parse(arena_allocator, command_buffer.items, environment);
 
-        zell.eval.run(arena_allocator, ast) catch |err| {
+        zell.eval.run(gpa, arena_allocator, ast, &environment) catch |err| {
             switch (err) {
                 error.ExitingShell => {
                     return 0;
