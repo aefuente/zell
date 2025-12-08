@@ -15,7 +15,7 @@ pub fn main() !u8 {
     defer assert(debug_allocator.deinit() == .ok);
     const gpa = debug_allocator.allocator();
 
-    var arena = std.heap.ArenaAllocator.init(gpa);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_allocator = arena.allocator();
     defer arena.deinit();
 
