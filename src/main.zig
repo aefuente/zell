@@ -39,6 +39,7 @@ pub fn main() !u8 {
     var environment = try zell.environment.Environment.init(gpa);
     defer environment.deinit(gpa);
     try environment.loadDefaults(gpa);
+    try environment.loadFile(arena_allocator, gpa);
 
     while (true) {
         defer _ = arena.reset(.free_all);
