@@ -263,11 +263,6 @@ fn expand(allocator: Allocator, tokens: *ParserState) ![]?[*:0]u8 {
             return result.toOwnedSlice(allocator);
         }
 
-        if (try expand_alias(allocator, token.value, tokens.env)) |value| {
-            try result.append(allocator, value);
-            return result.toOwnedSlice(allocator);
-        }
-
         if (try expand_tilde(allocator, token.value, tokens.env)) |value| {
             try result.append(allocator, value);
             return result.toOwnedSlice(allocator);
@@ -302,11 +297,17 @@ fn parse_command(allocator: Allocator, tokens: *ParserState) !*Command{
         return cm;
     }
 
+    const aliases = try expand_alias(allocator, token.value, tokens.env);
 
-    const expanded = try expand(allocator, tokens);
-    try cm.argv.appendSlice(allocator, expanded);
-
+    if (aliases) |value| {
+        try cm.argv.appendSlice(allocator, value);
+    }else {
+        const expanded = try expand(allocator, tokens);
+        try cm.argv.appendSlice(allocator, expanded);
+    }
     tokens.next();
+
+
 
     while (tokens.match(TokenType.Word) or tokens.match(TokenType.WordLiteral) or tokens.is_redirect()) {
         if (tokens.is_redirect()) {
@@ -575,16 +576,33 @@ fn expand_tilde(allocator: Allocator, word: [:0]const u8, env: environment.Envir
     return try toCstr(allocator, slice);
 }
 
-fn expand_alias(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[*:0]u8{
+fn expand_alias(allocator: Allocator, word: [:0]const u8, env: environment.Environment) !?[]?[*:0]u8{
+    var result = try std.ArrayList(?[*:0]u8).initCapacity(allocator, 10);
+
     for (env.vars.items) |variables| {
         if (variables.flags.alias == true) {
             const norm_word = std.mem.span(word.ptr);
             if (std.mem.eql(u8, norm_word, variables.name)) {
-                return try allocator.dupeZ(u8, variables.value);
+                var split = std.mem.splitAny(u8, variables.value, " ");
+
+                if (split.peek() == null ) {
+                    const value = try allocator.dupeZ(u8, variables.value);
+                    try result.append(allocator, value);
+                    return try result.toOwnedSlice(allocator);
+                }
+
+                while (split.next()) |value |{
+                    const dup = try allocator.dupeZ(u8, value);
+                    try result.append(allocator, dup);
+                }
+
+                return try result.toOwnedSlice(allocator);
             }
 
         }
     }
+
+    result.deinit(allocator);
     return null;
 }
 
