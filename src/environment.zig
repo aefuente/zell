@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const parser = @import("parser.zig");
+const eval = @import("evaluate.zig");
 
 fn toCstr(allocator: Allocator, str: []const u8) ![]u8 {
     var c_str = try allocator.alloc(u8, str.len+1);
@@ -62,6 +64,33 @@ pub const Environment = struct {
         c_path[23] = 0;
 
         try self.set(allocator, @ptrCast(&path_key), @ptrCast(&c_path), .{ .exp = true });
+    }
+
+    pub fn loadFile(self: *Environment, arena: Allocator, gpa: Allocator) !void {
+        const home = self.get("HOME") orelse return error.NoHomeDir;
+
+        const file_path = try std.fs.path.join(arena, &[_][]const u8{home, ".zellrc"});
+
+        var buffer: [1024]u8 = undefined;
+        var file = try std.fs.openFileAbsolute(file_path, .{.mode = .read_only});
+        defer file.close();
+        var file_reader = file.reader(&buffer);
+
+        var writer = std.Io.Writer.Allocating.init(arena);
+        defer writer.deinit();
+
+        while (file_reader.interface.streamDelimiter(&writer.writer, '\n')) |_| {
+            const line = writer.written();
+            const ast = try parser.parse(arena, line, self.*);
+
+            eval.run(gpa, arena, ast, self) catch { };
+
+            file_reader.interface.toss(1);
+            writer.clearRetainingCapacity();
+        }else | err | switch (err) {
+            error.EndOfStream => {},
+            else => {return err;}
+        }
     }
 
     pub fn get_env(self: *Environment, allocator: Allocator) ![*:null]?[*:0]u8{

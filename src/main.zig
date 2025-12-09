@@ -39,6 +39,7 @@ pub fn main() !u8 {
     var environment = try zell.environment.Environment.init(gpa);
     defer environment.deinit(gpa);
     try environment.loadDefaults(gpa);
+    try environment.loadFile(arena_allocator, gpa);
 
     while (true) {
         defer _ = arena.reset(.free_all);
@@ -56,7 +57,10 @@ pub fn main() !u8 {
 
         try history.store(gpa, command_buffer.items);
 
-        const ast = try zell.parser.parse(arena_allocator, command_buffer.items, environment);
+        const ast = zell.parser.parse(arena_allocator, command_buffer.items, environment) catch |err | {
+            std.debug.print("{any}\n", .{err});
+            continue;
+        };
 
         zell.eval.run(gpa, arena_allocator, ast, &environment) catch |err| {
             switch (err) {
@@ -64,7 +68,7 @@ pub fn main() !u8 {
                     return 0;
                 },
                 else => {
-                    return 1;
+                    std.debug.print("{any}\n", .{err});
                 }
             }
         };
