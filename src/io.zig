@@ -142,8 +142,56 @@ pub fn read_line(
 
     while (true) {
         // Read the character
-        const c = try stdin.takeByte();
+        var c = try stdin.takeByte();
 
+        
+
+        if (c == '\t') {
+
+            // No character before this
+            if (array_list.items.len > 0 and array_list.items[array_list.items.len-1] == ' ') {
+                var files = try cwd.openDir(allocator);
+                defer files.deinit(allocator);
+
+                const num_entries = files.entries.items.len;
+                var position: usize = 0;
+
+                if (position >= num_entries) {
+                    continue;
+                }
+
+                const inserted = files.entries.items[position];
+                const start = array_list.items.len;
+                var old_len = inserted.len;
+
+                try array_list.appendSlice(allocator, inserted);
+                cursor_position += inserted.len;
+                try draw_line(stdout, array_list.items, cursor_position);
+
+                c = try stdin.takeByte();
+
+                while (c == '\t') {
+                    position += 1;
+                    position = @mod(position, num_entries);
+
+                    const new_insert = files.entries.items[position];
+
+                    cursor_position = start + new_insert.len;
+
+                    try array_list.replaceRange(allocator, start, old_len, new_insert);
+                    try array_list.resize(allocator, cursor_position);
+
+                    old_len = new_insert.len;
+
+                    try draw_line(stdout, array_list.items, cursor_position);
+                    c = try stdin.takeByte();
+                }
+            }
+            // Character before this that does not include directory
+
+
+            // Character before this that does include directory
+        }
         if (c == BACKSPACE) {
             if (array_list.items.len == 0) {
                 continue;
@@ -155,14 +203,6 @@ pub fn read_line(
             cursor_position -= 1;
             _ = array_list.orderedRemove(cursor_position);
             try draw_line(stdout, array_list.items, cursor_position);
-        }
-
-        else if (c == '\t') {
-
-            if (array_list.items.len > 0 and array_list.items[array_list.items.len-1] == ' ') {
-                var files = try cwd.openDir(allocator);
-                defer files.deinit(allocator);
-            }
         }
 
         else if (c == '\n') {
