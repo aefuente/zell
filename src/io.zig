@@ -1,5 +1,6 @@
 const std = @import("std");
 const Terminal = @import("terminal.zig").Terminal;
+const cwd = @import("environment.zig").CWDList;
 
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
@@ -15,6 +16,7 @@ const RIGHT_ARROW = '\x43';
 const LEFT_ARROW = '\x44';
 const BACKSPACE = '\x7F';
 const CTRL_C = '\x03';
+const TAB = '\x09';
 
 const STDIN_BUF_SIZE: usize = 50;
 
@@ -153,6 +155,14 @@ pub fn read_line(
             cursor_position -= 1;
             _ = array_list.orderedRemove(cursor_position);
             try draw_line(stdout, array_list.items, cursor_position);
+        }
+
+        else if (c == '\t') {
+
+            if (array_list.items.len > 0 and array_list.items[array_list.items.len-1] == ' ') {
+                var files = try cwd.openDir(allocator);
+                defer files.deinit(allocator);
+            }
         }
 
         else if (c == '\n') {

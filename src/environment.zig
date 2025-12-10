@@ -189,7 +189,6 @@ const VariableFlags = struct {
     alias: bool = false,
 };
 
-// What does a variable look like?
 const EnvironmentVariable = struct {
     name: []const u8,
     value: []const u8,
@@ -209,4 +208,75 @@ const EnvironmentVariable = struct {
         allocator.free(self.value);
         allocator.destroy(self);
     }
+};
+
+pub const CWDList = struct {
+    entries: std.ArrayList([]u8),
+
+    pub fn openDir(allocator: Allocator) !CWDList{
+        var cwd = CWDList{
+            .entries = try std.ArrayList([]u8).initCapacity(allocator, 10),
+        };
+
+        var cwd_buf: [4096]u8 = undefined;
+        const cwd_str = try std.process.getCwd(&cwd_buf);
+
+        var cwd_dir = try std.fs.openDirAbsolute(cwd_str, .{.iterate = true});
+        defer cwd_dir.close();
+
+        var dir_iterator = cwd_dir.iterate();
+
+        while (dir_iterator.next()) | entry | {
+            if (entry) | e | {
+                var name = try allocator.alloc(u8, e.name.len);
+                @memcpy(name[0..], e.name);
+                try cwd.entries.append(allocator, name);
+
+            }else {
+                break;
+            }
+        }else | err | {
+            return err;
+        }
+
+        return cwd;
+    }
+
+    pub fn openDirRelative(allocator: Allocator, subPath: []const u8) !CWDList{
+        var cwd = CWDList{
+            .entries = try std.ArrayList([]u8).initCapacity(allocator, 10),
+        };
+
+        var cwd_buf: [4096]u8 = undefined;
+        const cwd_str = try std.process.getCwd(&cwd_buf);
+
+        const sub_path = try std.fs.path.join(allocator, &[_][]const u8{cwd_str, subPath});
+        defer allocator.free(sub_path);
+
+        const cwd_dir = try std.fs.openDirAbsolute(sub_path, .{.iterate = true});
+        defer cwd_dir.close();
+
+        const dir_iterator = cwd_dir.iterate();
+
+        while (dir_iterator.next()) |entry | {
+            var name = allocator.alloc(u8, entry.len);
+            @memcpy(&name, entry);
+            try cwd.entries.append(allocator, name);
+        }else | err | {
+            return err;
+        }
+        return cwd;
+    }
+
+    pub fn listPath(self: *CWDList) ![][]u8 {
+        return self.entries.items;
+    }
+
+    pub fn deinit(self: *CWDList, allocator: Allocator) void {
+        for (self.entries.items) | entry | {
+            allocator.free(entry);
+        }
+        self.entries.deinit(allocator);
+    }
+
 };
