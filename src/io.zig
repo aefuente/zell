@@ -187,16 +187,15 @@ pub fn read_line(
                     try draw_tab_suggestions(stdout, array_list.items, files.entries.items, position, cursor_position);
                     c = try stdin.takeByte();
                 }
-            }
-            // Character before this that does not include directory
-            if (array_list.items.len > 0) {
+            }else if (array_list.items.len > 0) {
                 var idx = array_list.items.len-1;
                 while (idx > 0 and array_list.items[idx] != ' ') { idx -= 1; }
+                idx += 1;
                 var files = try cwd.openDir(allocator);
                 defer files.deinit(allocator);
-                const suggestions = try fzf.filterAndSort(allocator, array_list.items[idx..], files.entries.items, 1.0);
-                defer allocator.free(suggestions);
+                const suggestions = try fzf.filterAndSort(allocator, array_list.items[idx..], files.entries.items, 0);
 
+                defer allocator.free(suggestions);
                 const num_entries = suggestions.len;
                 var position: usize = 0;
 
@@ -205,11 +204,13 @@ pub fn read_line(
                 }
 
                 const inserted = suggestions[position];
-                const start = array_list.items.len;
+
+                const start = idx;
                 var old_len = inserted.len;
 
-                try array_list.appendSlice(allocator, inserted);
-                cursor_position += inserted.len;
+                try array_list.replaceRange(allocator, idx, array_list.items[idx..].len, inserted);
+                cursor_position = array_list.items.len;
+
                 try draw_tab_suggestions(stdout, array_list.items, suggestions, position, cursor_position);
 
                 c = try stdin.takeByte();
@@ -235,7 +236,9 @@ pub fn read_line(
 
             }
 
-
+            if (c != '\t') {
+                try clear(stdout);
+            }
             // Character before this that does include directory
         }
         if (c == BACKSPACE) {
@@ -420,7 +423,8 @@ fn draw_tab_suggestions(writer: *std.Io.Writer,
     file_sugesstions: [][]const u8,
     current_suggestion: usize, 
     cursor_pos: usize) !void {
-    try writer.print("\rzell>> {s}\x1b[K",.{line});
+    _ = cursor_pos;
+    try writer.print("\rzell>> {s}\x1b[K\x1b[s",.{line});
     try writer.print("\n", .{});
     for (file_sugesstions, 0..) |file, idx| {
         if (idx == current_suggestion) {
@@ -429,7 +433,6 @@ fn draw_tab_suggestions(writer: *std.Io.Writer,
             try writer.print("{s} ", .{file});
         }
     }
-    try writer.print("\x1b[1A",.{});
-    try writer.print("\r\x1b[{d}C", .{cursor_pos+7});
+    try writer.print("\x1b[u", .{});
     try writer.flush();
 }
