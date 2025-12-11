@@ -211,11 +211,11 @@ const EnvironmentVariable = struct {
 };
 
 pub const CWDList = struct {
-    entries: std.ArrayList([]u8),
+    entries: std.ArrayList([]const u8),
 
     pub fn openDir(allocator: Allocator) !CWDList{
         var cwd = CWDList{
-            .entries = try std.ArrayList([]u8).initCapacity(allocator, 10),
+            .entries = try std.ArrayList([]const u8).initCapacity(allocator, 10),
         };
 
         var cwd_buf: [4096]u8 = undefined;
@@ -278,5 +278,4 @@ pub const CWDList = struct {
         }
         self.entries.deinit(allocator);
     }
-
 };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Terminal = @import("terminal.zig").Terminal;
 const cwd = @import("environment.zig").CWDList;
+const fzf = @import("fzf.zig");
 
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
@@ -117,6 +118,7 @@ pub const HistoryManager = struct {
     }
 };
 
+
 pub fn read_line(
     allocator: std.mem.Allocator,
     history: *HistoryManager,
@@ -147,7 +149,6 @@ pub fn read_line(
         
 
         if (c == '\t') {
-
             // No character before this
             if (array_list.items.len > 0 and array_list.items[array_list.items.len-1] == ' ') {
                 var files = try cwd.openDir(allocator);
@@ -166,7 +167,7 @@ pub fn read_line(
 
                 try array_list.appendSlice(allocator, inserted);
                 cursor_position += inserted.len;
-                try draw_line(stdout, array_list.items, cursor_position);
+                try draw_tab_suggestions(stdout, array_list.items, files.entries.items, position, cursor_position);
 
                 c = try stdin.takeByte();
 
@@ -183,11 +184,56 @@ pub fn read_line(
 
                     old_len = new_insert.len;
 
-                    try draw_line(stdout, array_list.items, cursor_position);
+                    try draw_tab_suggestions(stdout, array_list.items, files.entries.items, position, cursor_position);
                     c = try stdin.takeByte();
                 }
             }
             // Character before this that does not include directory
+            if (array_list.items.len > 0) {
+                var idx = array_list.items.len-1;
+                while (idx > 0 and array_list.items[idx] != ' ') { idx -= 1; }
+                var files = try cwd.openDir(allocator);
+                defer files.deinit(allocator);
+                const suggestions = try fzf.filterAndSort(allocator, array_list.items[idx..], files.entries.items, 1.0);
+                defer allocator.free(suggestions);
+
+                const num_entries = suggestions.len;
+                var position: usize = 0;
+
+                if (position >= num_entries) {
+                    continue;
+                }
+
+                const inserted = suggestions[position];
+                const start = array_list.items.len;
+                var old_len = inserted.len;
+
+                try array_list.appendSlice(allocator, inserted);
+                cursor_position += inserted.len;
+                try draw_tab_suggestions(stdout, array_list.items, suggestions, position, cursor_position);
+
+                c = try stdin.takeByte();
+
+                while (c == '\t') {
+                    position += 1;
+                    position = @mod(position, num_entries);
+
+                    const new_insert = suggestions[position];
+
+                    cursor_position = start + new_insert.len;
+
+                    try array_list.replaceRange(allocator, start, old_len, new_insert);
+                    try array_list.resize(allocator, cursor_position);
+
+                    old_len = new_insert.len;
+
+                    try draw_tab_suggestions(stdout, array_list.items, suggestions, position, cursor_position);
+                    c = try stdin.takeByte();
+                }
+
+                
+
+            }
 
 
             // Character before this that does include directory
@@ -208,6 +254,7 @@ pub fn read_line(
         else if (c == '\n') {
 
             try stdout.print("\n", .{});
+            try clear(stdout);
             try stdout.flush();
 
             var index: usize = array_list.items.len;
@@ -227,6 +274,7 @@ pub fn read_line(
         else if (c == CTRL_C) {
             array_list.clearRetainingCapacity();
             try stdout.print("\n", .{});
+            try clear(stdout);
             try stdout.flush();
             break;
         }
@@ -360,5 +408,28 @@ fn draw_line(writer: *std.Io.Writer, line: []const u8, cursor_pos: usize) !void 
         try writer.print("\x1b[{d}D", .{diff});
     }
 
+    try writer.flush();
+}
+
+fn clear(writer: *std.Io.Writer) !void {
+    try writer.print("\x1b[J", .{});
+}
+
+fn draw_tab_suggestions(writer: *std.Io.Writer,
+    line: []const u8,
+    file_sugesstions: [][]const u8,
+    current_suggestion: usize, 
+    cursor_pos: usize) !void {
+    try writer.print("\rzell>> {s}\x1b[K",.{line});
+    try writer.print("\n", .{});
+    for (file_sugesstions, 0..) |file, idx| {
+        if (idx == current_suggestion) {
+            try writer.print("\x1b[7m{s}\x1b[0m ", .{file});
+        }else {
+            try writer.print("{s} ", .{file});
+        }
+    }
+    try writer.print("\x1b[1A",.{});
+    try writer.print("\r\x1b[{d}C", .{cursor_pos+7});
     try writer.flush();
 }
